@@ -1,0 +1,1813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>CareTrack · Unified Patient & Room Monitor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23134135'/%3E%3Cpath d='M7 17h4l2.5-6 4 12 2.5-6H25' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"/>
+  <script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #f4f6f5;
+      --surface: #ffffff;
+      --border: #e2e8e6;
+      --border-strong: #cbd5d2;
+      --text: #1a2b27;
+      --text-2: #4b5f5a;
+      --text-3: #7a8f8a;
+      --accent: #134135;
+      --accent-2: #1a5c4c;
+      --accent-light: #e6f0ed;
+      --ok: #16794a;
+      --ok-bg: #e9f6ee;
+      --ok-border: #bfe3cc;
+      --warn: #92600a;
+      --warn-bg: #fdf3e0;
+      --warn-border: #f0d9a8;
+      --bad: #b4232a;
+      --bad-bg: #fdeeee;
+      --bad-border: #f5c6c8;
+      --radius: 10px;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Top Sticky Header */
+    header.top {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .top-inner {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      text-decoration: none;
+      color: inherit;
+    }
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent);
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .brand-name {
+      font-weight: 650;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+    .brand-name span {
+      color: var(--text-2);
+      font-weight: 500;
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-3);
+      margin-top: -1px;
+    }
+    .divider {
+      width: 1px;
+      height: 26px;
+      background: var(--border);
+    }
+
+    /* Navigation Tabs */
+    .nav-tabs {
+      display: flex;
+      gap: 3px;
+      background: #eef2f1;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px;
+    }
+    .nav-tab {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-2);
+      padding: 6px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .nav-tab:hover {
+      color: var(--text);
+    }
+    .nav-tab.active {
+      background: #ffffff;
+      border-color: var(--border);
+      color: var(--accent);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .nav-tab svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Header Actions & Connections */
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .device-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .device-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-2);
+    }
+    input#device {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      padding: 5px 9px;
+      width: 140px;
+      background: #fbfcfb;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input#device:focus {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 3px rgba(26,92,76,0.12);
+      background: #fff;
+    }
+    button#connect {
+      appearance: none;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 12px;
+      border-radius: 6px;
+      padding: 5px 11px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button#connect:hover {
+      background: var(--accent-2);
+    }
+
+    /* Connection status pills */
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      font-family: var(--mono);
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fbfcfb;
+      color: var(--text-2);
+      white-space: nowrap;
+    }
+    .status-badge .led {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #b6c2bf;
+      flex-shrink: 0;
+    }
+    .status-badge.live {
+      color: var(--ok);
+      border-color: var(--ok-border);
+      background: var(--ok-bg);
+    }
+    .status-badge.live .led {
+      background: var(--ok);
+      box-shadow: 0 0 0 2px rgba(22,121,74,0.2);
+    }
+    .status-badge.down {
+      color: var(--bad);
+      border-color: var(--bad-border);
+      background: var(--bad-bg);
+    }
+    .status-badge.down .led {
+      background: var(--bad);
+    }
+
+    /* Fallback and Emergency Alert Banner */
+    .fall-alert-banner {
+      position: sticky;
+      top: 56px;
+      z-index: 99;
+      margin: 0;
+      padding: 12px 20px;
+      background: linear-gradient(135deg, #991b1b 0%, #b91c1c 50%, #dc2626 100%);
+      border-bottom: 2px solid #ef4444;
+      box-shadow: 0 8px 24px rgba(185, 28, 28, 0.35);
+      animation: bannerSlideDown 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes bannerSlideDown {
+      from { transform: translateY(-100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .fall-alert-content {
+      max-width: 1240px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: #fff;
+    }
+    .fall-alert-icon {
+      width: 36px;
+      height: 36px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+      flex-shrink: 0;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      animation: alertPulse 1s infinite alternate;
+    }
+    @keyframes alertPulse {
+      from { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); }
+      to { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(255, 255, 255, 0); }
+    }
+    .fall-alert-text {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .fall-alert-text strong {
+      font-size: 14px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-weight: 750;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .fall-alert-text span {
+      font-size: 12.5px;
+      color: rgba(255, 255, 255, 0.9);
+      font-family: var(--sans);
+    }
+    .fall-alert-btn {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 7px 15px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .fall-alert-btn:hover {
+      background: #ffffff;
+      color: #b91c1c;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Main Container */
+    main {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 16px 20px 48px;
+    }
+    .view-section {
+      display: none;
+    }
+    .view-section.active {
+      display: block;
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(2px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Page Headings */
+    .page-head {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 2px 0 14px;
+    }
+    .page-head h1 {
+      font-size: 20px;
+      font-weight: 650;
+      letter-spacing: -0.015em;
+    }
+    .page-head .page-desc {
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .page-head .meta {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-3);
+      display: flex;
+      gap: 12px;
+    }
+
+    /* KPI Cards */
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px 12px;
+      min-width: 0;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .kpi:hover {
+      box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    }
+    .kpi-label {
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+    .kpi-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: #eef2f1;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .kpi-icon svg {
+      width: 13px;
+      height: 13px;
+    }
+    .kpi-value-row {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .kpi-value {
+      font-size: 32px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .kpi-value .unit {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-3);
+    }
+    .kpi-sub {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--text-3);
+      margin-top: 4px;
+    }
+    .kpi-foot {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .delta {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--text-2);
+    }
+    .delta.rising { color: var(--ok); }
+    .delta.falling { color: var(--bad); }
+    canvas.spark {
+      width: 110px;
+      height: 28px;
+      display: block;
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 650;
+      padding: 2.5px 8.5px;
+      border-radius: 999px;
+      border: 1px solid;
+      white-space: nowrap;
+    }
+    .badge.ok, .badge-normal, .badge-ok {
+      color: var(--ok);
+      background: var(--ok-bg);
+      border-color: var(--ok-border);
+    }
+    .badge.idle {
+      color: var(--text-2);
+      background: #eef2f1;
+      border-color: var(--border);
+    }
+    .badge.alert, .badge-alert {
+      color: var(--bad);
+      background: var(--bad-bg);
+      border-color: var(--bad-border);
+    }
+    .badge.motion-active {
+      color: #fff;
+      background: var(--ok);
+      border-color: var(--ok);
+    }
+    .badge.stale, .badge-warning {
+      color: var(--warn);
+      background: var(--warn-bg);
+      border-color: var(--warn-border);
+    }
+
+    /* Panels & Grids */
+    .panels {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .panel, .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      min-width: 0;
+      overflow: hidden;
+    }
+    .panel-head, .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #fafcfb;
+    }
+    .panel-head h2, .card-header h2, .card-header .card-label {
+      font-size: 13px;
+      margin: 0;
+      font-weight: 650;
+      color: var(--text);
+    }
+    .panel-head .hint, .card-header .topic {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--text-3);
+      font-family: var(--mono);
+    }
+
+    /* Table Logs */
+    table.log {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    table.log th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-3);
+      font-weight: 650;
+      padding: 9px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #fafcfb;
+    }
+    table.log td {
+      padding: 9px 16px;
+      border-bottom: 1px solid #eef2f1;
+      font-variant-numeric: tabular-nums;
+    }
+    table.log tr:last-child td { border-bottom: 0; }
+    table.log td.time, table.log td.val { font-family: var(--mono); font-size: 12px; }
+    table.log td.metric { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+    tbody#feed tr.fresh td, .log-item.fresh { animation: rowin 0.4s ease; }
+    @keyframes rowin { from { background-color: #e9f6ee; } to { background-color: transparent; } }
+    .fresh-note { padding: 16px; color: var(--text-3); font-size: 13px; text-align: center; }
+
+    /* Key Value Panel */
+    .kv { display: flex; flex-direction: column; }
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #eef2f1;
+      font-size: 13px;
+    }
+    .kv-row:last-child { border-bottom: 0; }
+    .kv-row .k { color: var(--text-2); }
+    .kv-row .v { font-family: var(--mono); font-size: 12px; text-align: right; }
+
+    /* Chart & Feed in Cardio */
+    .chart-container {
+      position: relative;
+      height: 310px;
+      padding: 12px 14px 10px;
+    }
+    .log-feed {
+      max-height: 310px;
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .log-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border-bottom: 1px solid #eef2f1;
+    }
+    .log-item:last-child { border-bottom: 0; }
+    .log-time { color: var(--text-3); flex-shrink: 0; }
+    .log-data { color: var(--text); text-align: right; }
+    .log-data strong { font-weight: 650; }
+    .log-empty { color: var(--text-3); text-align: center; padding: 36px 12px; font-size: 13px; }
+
+    /* Dual Overview Layout */
+    .dual-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .dual-section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .dual-section-title::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Heart pulse effect */
+    @keyframes heartBeat {
+      0% { transform: scale(1); }
+      14% { transform: scale(1.22); }
+      28% { transform: scale(1); }
+      42% { transform: scale(1.15); }
+      70% { transform: scale(1); }
+    }
+    .pulsing {
+      animation: heartBeat 0.85s infinite ease-in-out;
+      transform-origin: center;
+    }
+
+    footer.meta {
+      margin-top: 18px;
+      color: var(--text-3);
+      font-family: var(--mono);
+      font-size: 11px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 0 2px;
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .panels, .charts-grid { grid-template-columns: 1fr; }
+      .divider { display: none; }
+    }
+    @media (max-width: 600px) {
+    /* Fall Alert Banner & Simulation Button */
+    .fall-alert-banner {
+      background: #b4232a;
+      color: #ffffff;
+      padding: 12px 20px;
+      position: sticky;
+      top: 53px;
+      z-index: 45;
+      box-shadow: 0 4px 14px rgba(180, 35, 42, 0.4);
+      animation: pulseAlert 1.2s infinite alternate;
+    }
+    @keyframes pulseAlert {
+      from { background-color: #b4232a; }
+      to { background-color: #8c1318; }
+    }
+    .fall-alert-content {
+      max-width: 1240px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .fall-alert-icon { font-size: 26px; }
+    .fall-alert-text { flex: 1; min-width: 220px; font-size: 13.5px; }
+    .fall-alert-text strong { display: block; font-size: 15px; letter-spacing: 0.02em; }
+    .fall-alert-btn {
+      background: #ffffff;
+      color: #b4232a;
+      font-weight: 700;
+      border: none;
+      padding: 7px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12.5px;
+      transition: all 0.15s;
+    }
+    .fall-alert-btn:hover { background: #fbebee; transform: scale(1.02); }
+  </style>
+</head>
+<body>
+
+  <!-- Sticky Top Navigation -->
+  <header class="top">
+    <div class="top-inner">
+      <a href="#" class="brand" onclick="switchTab('room'); return false;">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 12h4l2.5-6 4 12 2.5-6H21" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">CareTrack <span>/ Multi-Unit</span></div>
+          <div class="brand-sub">Telemetry & Environmental Monitor</div>
+        </div>
+      </a>
+
+      <div class="divider" aria-hidden="true"></div>
+
+      <!-- Segmented SPA Tabs -->
+      <nav class="nav-tabs" aria-label="Views">
+        <button class="nav-tab active" id="tabBtn-room" onclick="switchTab('room')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          Room Unit
+        </button>
+        <button class="nav-tab" id="tabBtn-cardio" onclick="switchTab('cardio')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20.5C7 16.5 3.5 13.3 3.5 9.6 3.5 7 5.5 5 8 5c1.6 0 3.1.8 4 2.1C12.9 5.8 14.4 5 16 5c2.5 0 4.5 2 4.5 4.6 0 3.7-3.5 6.9-8.5 10.9Z"/></svg>
+          Cardiac & Fall
+        </button>
+        <button class="nav-tab" id="tabBtn-dual" onclick="switchTab('dual')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+          Dual Overview
+        </button>
+      </nav>
+
+      <!-- Persistent Connection Indicators & Controls -->
+      <div class="header-actions">
+        <!-- Room Unit Connect Input -->
+        <div class="device-group" title="Room Unit ID">
+          <label for="device">Room</label>
+          <input id="device" value="" placeholder="room-unit-01" autocomplete="off" spellcheck="false"/>
+          <button id="connect" type="button">Connect</button>
+          <div class="status-badge" id="conn" title="Room Unit WebSocket connection">
+            <span class="led"></span>
+            <span id="status">Connecting…</span>
+          </div>
+        </div>
+
+        <!-- Cardio Cloud MQTT Status -->
+        <div class="status-badge" id="mqttStatus" title="Cardio Unit HiveMQ Cloud TLS connection">
+          <span class="led"></span>
+          <span id="statusText">HiveMQ…</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Emergency Fall Alert Banner (High-Priority Sticky Notification) -->
+  <div id="fallAlertBanner" class="fall-alert-banner" style="display:none">
+    <div class="fall-alert-content">
+      <div class="fall-alert-icon">⚠️</div>
+      <div class="fall-alert-text">
+        <strong>CRITICAL EMERGENCY: PATIENT FALL DETECTED!</strong>
+        <span id="fallAlertDetails">Impact shock recorded by wearable sensor. Immediate caregiver assistance required!</span>
+      </div>
+      <button type="button" class="fall-alert-btn" onclick="dismissFallAlert()">Acknowledge & Dismiss</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- ================================================================= -->
+    <!-- VIEW 1: ROOM UNIT (Single Tab)                                   -->
+    <!-- ================================================================= -->
+    <div id="view-room" class="view-section active">
+      <div class="page-head">
+        <h1 id="title">Room Unit Overview</h1>
+        <span class="page-desc">Environmental & presence telemetry</span>
+        <div class="meta">
+          <span id="clock">--:--:--</span>
+          <span id="tz"></span>
+        </div>
+      </div>
+
+      <section class="kpis" aria-label="Room telemetry readings">
+        <div class="kpi">
+          <div class="kpi-label">
+            <span>Temperature</span>
+            <span class="badge idle" id="temp-flag">—</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-value" id="temp" aria-live="polite">--<span class="unit"> °C</span></div>
+          </div>
+          <div class="kpi-sub" id="temp-ts">no data yet</div>
+          <div class="kpi-foot">
+            <span class="delta" id="temp-trend">Δ —</span>
+            <canvas class="spark" id="spark-temp" width="220" height="56"></canvas>
+          </div>
+        </div>
+
+        <div class="kpi">
+          <div class="kpi-label">
+            <span>Humidity</span>
+            <span class="badge idle" id="hum-flag">—</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-value" id="hum" aria-live="polite">--<span class="unit"> %</span></div>
+          </div>
+          <div class="kpi-sub" id="hum-ts">no data yet</div>
+          <div class="kpi-foot">
+            <span class="delta" id="hum-delta">RH —</span>
+            <canvas class="spark" id="spark-hum" width="220" height="56"></canvas>
+          </div>
+        </div>
+
+        <div class="kpi">
+          <div class="kpi-label">
+            <span>Motion Presence</span>
+            <span class="badge idle" id="motion-badge">Clear</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-value" id="motion" aria-live="polite" style="font-size:24px;padding-top:4px">--</div>
+          </div>
+          <div class="kpi-sub" id="motion-ts">no data yet</div>
+          <div class="kpi-foot">
+            <span class="delta" id="motion-ago">no events</span>
+          </div>
+        </div>
+
+        <div class="kpi">
+          <div class="kpi-label">
+            <span>Room Link</span>
+            <span class="badge idle" id="dev-status">Offline</span>
+          </div>
+          <div class="kpi-value-row">
+            <div class="kpi-value" id="last" style="font-size:18px;padding-top:6px;font-family:var(--mono);font-weight:600">--</div>
+          </div>
+          <div class="kpi-sub" id="last-ago">awaiting first message</div>
+          <div class="kpi-foot">
+            <span class="delta" id="dev-status-ts">Room Link</span>
+            <span class="delta">Live Stream</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panels">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Recent Room Events</h2>
+            <span class="hint" id="feed-count">0 events</span>
+          </div>
+          <div style="overflow-x:auto;max-height:320px;overflow-y:auto">
+            <table class="log" aria-label="Recent readings">
+              <thead>
+                <tr>
+                  <th style="width:100px">Time</th>
+                  <th>Metric</th>
+                  <th style="text-align:right">Value</th>
+                </tr>
+              </thead>
+              <tbody id="feed">
+                <tr><td colspan="3" class="fresh-note">Connecting to room unit… Data streams via WebSocket from backend.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Unit Information</h2>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span class="k">Active Device ID</span><span class="v" id="kv-device">—</span></div>
+            <div class="kv-row"><span class="k">Link Status</span><span class="v">Live Stream</span></div>
+            <div class="kv-row"><span class="k">Session Started</span><span class="v" id="kv-session">—</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- VIEW 2: CARDIAC TELEMETRY (Single Tab)                           -->
+    <!-- ================================================================= -->
+    <div id="view-cardio" class="view-section">
+      <div class="page-head">
+        <h1>Cardiac Telemetry Overview</h1>
+        <span class="page-desc">Real-time wearable ECG & PPG vitals</span>
+        <div class="meta">
+          <span id="clock-cardio">--:--:--</span>
+          <span class="badge badge-normal" id="packetCount">0 packets</span>
+        </div>
+      </div>
+
+      <section class="kpis" aria-label="Cardiac vital readings">
+        <div class="kpi card-heart">
+          <div class="kpi-label">
+            <span>Heart Rate</span>
+            <div class="kpi-icon" aria-hidden="true">
+              <svg id="heartSvg" viewBox="0 0 24 24" fill="none" stroke="#134135" stroke-width="2"><path d="M12 20.5C7 16.5 3.5 13.3 3.5 9.6 3.5 7 5.5 5 8 5c1.6 0 3.1.8 4 2.1C12.9 5.8 14.4 5 16 5c2.5 0 4.5 2 4.5 4.6 0 3.7-3.5 6.9-8.5 10.9Z"/></svg>
+            </div>
+          </div>
+          <div class="kpi-value-row">
+            <span class="kpi-value" id="valBPM">--</span>
+            <span class="kpi-unit">bpm</span>
+          </div>
+          <div class="kpi-foot">
+            <span id="bpmRangeStatus" class="badge badge-normal">—</span>
+          </div>
+        </div>
+
+        <div class="kpi card-spo2">
+          <div class="kpi-label">
+            <span>Oxygen (SpO2)</span>
+            <div class="kpi-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#134135" stroke-width="2"><path d="M3 12h3l2-5 3 10 2.5-7 1.5 2H21"/></svg>
+            </div>
+          </div>
+          <div class="kpi-value-row">
+            <span class="kpi-value" id="valSpO2">--</span>
+            <span class="kpi-unit">%</span>
+          </div>
+          <div class="kpi-foot">
+            <span id="spo2Status" class="badge badge-normal">—</span>
+          </div>
+        </div>
+
+        <div class="kpi card-temp">
+          <div class="kpi-label">
+            <span>Sensor Temp</span>
+            <div class="kpi-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#134135" stroke-width="2"><path d="M14 14.5V5a2 2 0 1 0-4 0v9.5a4 4 0 1 0 4 0Z"/></svg>
+            </div>
+          </div>
+          <div class="kpi-value-row">
+            <span class="kpi-value" id="valTemp">--</span>
+            <span class="kpi-unit">°C</span>
+          </div>
+          <div class="kpi-foot">
+            <span id="tempStatus" class="badge badge-normal">—</span>
+          </div>
+        </div>
+
+        <div class="kpi card-risk">
+          <div class="kpi-label">
+            <span>Patient Status</span>
+            <div class="kpi-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#134135" stroke-width="2"><path d="M12 3 5 6v5c0 5 3.4 8.4 7 10 3.6-1.6 7-5 7-10V6l-7-3Z"/><path d="m9.5 12 1.8 1.8 3.2-3.6"/></svg>
+            </div>
+          </div>
+          <div class="kpi-value-row">
+            <span class="kpi-value" id="valRisk" style="font-size:24px">—</span>
+          </div>
+          <div class="kpi-foot">
+            <span id="lastUpdateText" class="delta">Waiting for telemetry…</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="charts-grid">
+        <div class="chart-card">
+          <div class="card-header">
+            <span class="card-label">Telemetry History</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="telemetryChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card">
+          <div class="card-header">
+            <span class="card-label">Cardiac Telemetry Feed</span>
+          </div>
+          <div class="log-feed" id="logFeed">
+            <div class="log-empty">Connecting to HiveMQ Cloud TLS…</div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- VIEW 3: DUAL OVERVIEW (Both Dashboards Visible)                  -->
+    <!-- ================================================================= -->
+    <div id="view-dual" class="view-section">
+      <div class="page-head">
+        <h1>Dual Patient Overview</h1>
+        <span class="page-desc">Simultaneous Room & Cardiac Monitoring</span>
+      </div>
+
+      <div class="dual-grid">
+        <!-- Dual Cardiac Block -->
+        <div>
+          <div class="dual-section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20.5C7 16.5 3.5 13.3 3.5 9.6 3.5 7 5.5 5 8 5c1.6 0 3.1.8 4 2.1C12.9 5.8 14.4 5 16 5c2.5 0 4.5 2 4.5 4.6 0 3.7-3.5 6.9-8.5 10.9Z"/></svg>
+            Cardiac Vitals Telemetry
+          </div>
+          <div class="kpis">
+            <div class="kpi">
+              <div class="kpi-label">Heart Rate</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualValBPM">--</span><span class="kpi-unit">bpm</span></div>
+              <div class="kpi-foot"><span id="dualBpmStatus" class="badge badge-normal">—</span><span class="delta">Wearable</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Oxygen (SpO2)</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualValSpO2">--</span><span class="kpi-unit">%</span></div>
+              <div class="kpi-foot"><span id="dualSpo2Status" class="badge badge-normal">—</span><span class="delta">Pulse-Ox</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Sensor Temp</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualValTemp">--</span><span class="kpi-unit">°C</span></div>
+              <div class="kpi-foot"><span class="delta">Skin Temp</span><span class="delta">Celsius</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Clinical Risk</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualValRisk" style="font-size:24px">—</span></div>
+              <div class="kpi-foot"><span id="dualLastUpdate" class="delta">Awaiting data</span><span class="delta">Risk score</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dual Room Block -->
+        <div>
+          <div class="dual-section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            Room Environmental Telemetry
+          </div>
+          <div class="kpis">
+            <div class="kpi">
+              <div class="kpi-label">Temperature</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualTemp">--<span class="unit"> °C</span></span></div>
+              <div class="kpi-foot"><span class="delta" id="dualTempTrend">Δ —</span><span class="badge idle" id="dualTempFlag">—</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Humidity</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualHum">--<span class="unit"> %</span></span></div>
+              <div class="kpi-foot"><span class="delta" id="dualHumDelta">RH —</span><span class="badge idle" id="dualHumFlag">—</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Motion Presence</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualMotion" style="font-size:22px">--</span></div>
+              <div class="kpi-foot"><span class="delta" id="dualMotionAgo">no events</span><span class="badge idle" id="dualMotionBadge">Clear</span></div>
+            </div>
+            <div class="kpi">
+              <div class="kpi-label">Unit Status</div>
+              <div class="kpi-value-row"><span class="kpi-value" id="dualLast" style="font-size:18px">--</span></div>
+              <div class="kpi-foot"><span class="badge idle" id="dualDevStatus">Offline</span><span class="delta" id="dualLastAgo">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ---------------------------------------------------------------------------
+    // Helper & Utility Functions
+    // ---------------------------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const pad = (n) => String(n).padStart(2, '0');
+
+    function fmtT(ts) {
+      if (!ts) return '—';
+      let d = new Date(ts);
+      if (isNaN(d.getTime()) || d.getFullYear() < 2020) d = new Date();
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function fmtF(ts) {
+      if (!ts) return '--';
+      let d = new Date(ts);
+      if (isNaN(d.getTime()) || d.getFullYear() < 2020) d = new Date();
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + fmtT(d);
+    }
+
+    function ago(ts) {
+      if (!ts) return '—';
+      let d = new Date(ts);
+      if (isNaN(d.getTime()) || d.getFullYear() < 2020) return 'just now';
+      const s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+      if (s < 5) return 'just now';
+      if (s < 60) return s + 's ago';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ago';
+      return Math.floor(m / 60) + 'h ago';
+    }
+
+    function tickClock() {
+      const d = new Date();
+      const s = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      if ($('clock')) $('clock').textContent = s;
+      if ($('clock-cardio')) $('clock-cardio').textContent = s;
+    }
+    setInterval(tickClock, 1000);
+    tickClock();
+    $('tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+
+    const sessionStart = new Date();
+    $('kv-session').textContent = 'since ' + pad(sessionStart.getHours()) + ':' + pad(sessionStart.getMinutes());
+
+    // ---------------------------------------------------------------------------
+    // SPA Tab Navigation (NO FULL RELOAD -> Background sockets stay permanently connected!)
+    // ---------------------------------------------------------------------------
+    let currentTab = 'room';
+
+    function switchTab(tab) {
+      currentTab = tab;
+      ['room', 'cardio', 'dual'].forEach(t => {
+        const viewEl = $('view-' + t);
+        const btnEl = $('tabBtn-' + t);
+        if (viewEl) viewEl.classList.toggle('active', t === tab);
+        if (btnEl) btnEl.classList.toggle('active', t === tab);
+      });
+
+      // Update URL hash / state without page reload
+      try {
+        const u = new URL(location.href);
+        u.hash = '#' + tab;
+        history.replaceState(null, '', u);
+      } catch (e) {}
+
+      // If switching to Cardio or Dual, resize Chart.js so it fits container perfectly
+      if (tab === 'cardio' || tab === 'dual') {
+        setTimeout(() => {
+          if (telemetryChart) {
+            telemetryChart.resize();
+            telemetryChart.update('none');
+          }
+        }, 30);
+      }
+      if (tab === 'room' || tab === 'dual') {
+        spark('spark-temp', tempHist);
+        spark('spark-hum', humHist);
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // 1. ROOM UNIT (Persistent WebSocket to FastAPI /ws/live)
+    // ---------------------------------------------------------------------------
+    let ws = null;
+    let deviceId = '';
+    let reconnectTimer = null;
+    let reconnectDelay = 1000;
+    const MAX_RECONNECT_DELAY = 12000;
+    const tempHist = [];
+    const humHist = [];
+    let lastTemp = null, lastHum = null;
+    let lastMotionTs = null, lastSeenTs = null;
+    let eventCount = 0;
+    let pingTimer = null, refreshTimer = null;
+
+    function setRoomConn(text, mode) {
+      $('status').textContent = text;
+      $('conn').className = 'status-badge' + (mode ? ' ' + mode : '');
+    }
+
+    function spark(id, data) {
+      const c = $(id);
+      if (!c) return;
+      const ctx = c.getContext('2d');
+      const W = c.width, H = c.height;
+      ctx.clearRect(0, 0, W, H);
+      if (data.length < 2) return;
+      const min = Math.min(...data), max = Math.max(...data), span = (max - min) || 1;
+      ctx.beginPath();
+      data.forEach((v, i) => {
+        const x = 4 + (i / (data.length - 1)) * (W - 8);
+        const y = 6 + (1 - (v - min) / span) * (H - 12);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = '#1a5c4c';
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    function comfort(t, h) {
+      const tf = $('temp-flag'), hf = $('hum-flag');
+      const dtf = $('dualTempFlag'), dhf = $('dualHumFlag');
+      let tText = '—', tClass = 'badge idle';
+      let hText = '—', hClass = 'badge idle';
+
+      if (t !== null && isFinite(t)) {
+        if (t < 18) { tText = 'Low'; tClass = 'badge stale'; }
+        else if (t > 27) { tText = 'High'; tClass = 'badge stale'; }
+        else { tText = 'Normal'; tClass = 'badge ok'; }
+      }
+      if (h !== null && isFinite(h)) {
+        if (h < 30) { hText = 'Dry'; hClass = 'badge stale'; }
+        else if (h > 65) { hText = 'Humid'; hClass = 'badge stale'; }
+        else { hText = 'Normal'; hClass = 'badge ok'; }
+      }
+      if (tf) { tf.textContent = tText; tf.className = tClass; }
+      if (dtf) { dtf.textContent = tText; dtf.className = tClass; }
+      if (hf) { hf.textContent = hText; hf.className = hClass; }
+      if (dhf) { dhf.textContent = hText; dhf.className = hClass; }
+    }
+
+    function roomRow(metric, value, ts) {
+      const tb = $('feed');
+      if (tb.querySelector('.fresh-note')) tb.innerHTML = '';
+      const tr = document.createElement('tr');
+      tr.className = 'fresh';
+      let disp = value;
+      if (typeof value === 'number') disp = Math.round(value * 10) / 10;
+      if (metric === 'motion_detected') disp = (Number(value) > 0.5) ? 'Detected' : 'Clear';
+      tr.innerHTML = '<td class="time">' + fmtT(ts) + '</td><td class="metric">' + metric + '</td><td class="val" style="text-align:right">' + disp + '</td>';
+      tb.prepend(tr);
+      while (tb.children.length > 25) tb.lastChild.remove();
+      eventCount++;
+      $('feed-count').textContent = eventCount + ' event' + (eventCount === 1 ? '' : 's');
+    }
+
+    function updateMotion(val, ts, silent) {
+      if (val === null || val === undefined) return;
+      const on = Number(val) > 0.5;
+      const str = on ? 'Detected' : 'No motion';
+      $('motion').textContent = str;
+      $('dualMotion').textContent = str;
+      $('motion-ts').textContent = ts ? 'sensor · ' + fmtT(ts) : 'no data yet';
+
+      const b = $('motion-badge');
+      const db = $('dualMotionBadge');
+      const bText = on ? 'Motion' : 'Clear';
+      const bClass = 'badge ' + (on ? 'motion-active' : 'idle');
+      if (b) { b.textContent = bText; b.className = bClass; }
+      if (db) { db.textContent = bText; db.className = bClass; }
+
+      if (on && ts) lastMotionTs = ts;
+      if (ts) {
+        lastSeenTs = ts;
+        $('last').textContent = fmtF(ts);
+        $('dualLast').textContent = fmtF(ts);
+        renderAgo();
+      }
+      if (!silent) roomRow('motion_detected', val, ts);
+    }
+
+    function updateCard(which, val, ts, silent) {
+      if (val === null || val === undefined) return;
+      const n = Number(val);
+      if (!isFinite(n)) return;
+
+      if (which === 'temp') {
+        $('temp').innerHTML = n.toFixed(1) + '<span class="unit"> °C</span>';
+        $('dualTemp').innerHTML = n.toFixed(1) + '<span class="unit"> °C</span>';
+        $('temp-ts').textContent = 'sensor · ' + fmtT(ts);
+        if (lastTemp !== null) {
+          const d = n - lastTemp;
+          const el = $('temp-trend');
+          const del = $('dualTempTrend');
+          let text = 'Δ 0.0 °C', cls = 'delta';
+          if (Math.abs(d) >= 0.05) {
+            text = 'Δ ' + (d > 0 ? '+' : '') + d.toFixed(1) + ' °C';
+            cls = 'delta ' + (d > 0 ? 'rising' : 'falling');
+          }
+          if (el) { el.textContent = text; el.className = cls; }
+          if (del) { del.textContent = text; del.className = cls; }
+        }
+        lastTemp = n;
+        tempHist.push(n);
+        if (tempHist.length > 40) tempHist.shift();
+        spark('spark-temp', tempHist);
+        comfort(n, lastHum);
+        if (!silent) roomRow('temperature', n, ts);
+      } else {
+        $('hum').innerHTML = n.toFixed(1) + '<span class="unit"> %</span>';
+        $('dualHum').innerHTML = n.toFixed(1) + '<span class="unit"> %</span>';
+        $('hum-ts').textContent = 'sensor · ' + fmtT(ts);
+        if (lastHum !== null) {
+          const d = n - lastHum;
+          const text = 'Δ ' + (d >= 0 ? '+' : '') + d.toFixed(1) + ' %';
+          $('hum-delta').textContent = text;
+          $('dualHumDelta').textContent = text;
+        }
+        lastHum = n;
+        humHist.push(n);
+        if (humHist.length > 40) humHist.shift();
+        spark('spark-hum', humHist);
+        comfort(lastTemp, n);
+        if (!silent) roomRow('humidity', n, ts);
+      }
+
+      if (ts) {
+        lastSeenTs = ts;
+        $('last').textContent = fmtF(ts);
+        $('dualLast').textContent = fmtF(ts);
+        renderAgo();
+      }
+    }
+
+    function renderAgo() {
+      if (lastMotionTs) {
+        const text = 'last event ' + ago(lastMotionTs);
+        $('motion-ago').textContent = text;
+        $('dualMotionAgo').textContent = text;
+      }
+      if (lastSeenTs) {
+        const text = 'updated ' + ago(lastSeenTs);
+        $('last-ago').textContent = text;
+        $('dualLastAgo').textContent = text;
+        const stale = (Date.now() - new Date(lastSeenTs).getTime()) > 90000;
+        const b = $('dev-status');
+        const db = $('dualDevStatus');
+        if (b && !b.dataset.pinned) {
+          b.textContent = stale ? 'Stale' : 'Online';
+          b.className = 'badge ' + (stale ? 'stale' : 'ok');
+        }
+        if (db && !db.dataset.pinned) {
+          db.textContent = stale ? 'Stale' : 'Online';
+          db.className = 'badge ' + (stale ? 'stale' : 'ok');
+        }
+      }
+    }
+    setInterval(renderAgo, 5000);
+
+    let lastValidHr = 0;
+    let lastValidSpo2 = 0;
+    let lastValidTemp = 36.5;
+
+    async function loadLatest(id) {
+      try {
+        let res = null;
+        try {
+          res = await fetch('/readings/latest?device_id=' + encodeURIComponent(id));
+        } catch (e) {}
+        if (!res || !res.ok) {
+          try {
+            res = await fetch('http://localhost:8000/readings/latest?device_id=' + encodeURIComponent(id));
+          } catch (e) {}
+        }
+        if (!res || !res.ok) return;
+        const d = await res.json();
+        if (d.temperature) updateCard('temp', d.temperature.value, d.temperature.timestamp, true);
+        if (d.humidity) updateCard('hum', d.humidity.value, d.humidity.timestamp, true);
+        if (d.motion_detected) updateMotion(d.motion_detected.value, d.motion_detected.timestamp, true);
+
+        // Load and display last recorded vitals from database
+        if (d.heart_rate && d.heart_rate.value > 0) {
+          lastValidHr = Math.round(d.heart_rate.value);
+        }
+        if (d.spo2 && d.spo2.value > 0) {
+          lastValidSpo2 = Math.round(d.spo2.value);
+        }
+        if (d.cardio_temp && d.cardio_temp.value > 0) {
+          lastValidTemp = Number(d.cardio_temp.value);
+        }
+        if (lastValidHr > 0 || lastValidSpo2 > 0) {
+          updateCardioDashboard({
+            heart_rate: 0,
+            spo2: 0,
+            temperature: lastValidTemp
+          });
+          const ts = (d.heart_rate && d.heart_rate.timestamp) || (d.spo2 && d.spo2.timestamp);
+          if (ts) {
+            const timeStr = fmtT(ts);
+            if ($('lastUpdateText')) $('lastUpdateText').innerText = 'Last recorded ' + timeStr;
+            if ($('dualLastUpdate')) $('dualLastUpdate').innerText = 'Last recorded ' + timeStr;
+          }
+        }
+
+        if (d.last_seen) {
+          lastSeenTs = d.last_seen;
+          $('last').textContent = fmtF(d.last_seen);
+          $('dualLast').textContent = fmtF(d.last_seen);
+          renderAgo();
+        }
+      } catch (e) {}
+    }
+
+    function connectWs(id) {
+      if (!id) return;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+      if (ws) { ws.onclose = null; try { ws.close(); } catch(e){} }
+
+      setRoomConn('Connecting…', '');
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const host = location.host || 'localhost:8000';
+      ws = new WebSocket(proto + '://' + host + '/ws/live');
+
+      ws.onopen = () => {
+        setRoomConn('Live', 'live');
+        reconnectDelay = 1000;
+        $('title').textContent = 'Room Overview · ' + id;
+        $('kv-device').textContent = id;
+        $('kv-env').textContent = 'caretrack/' + id + '/room/environment';
+        $('kv-motion').textContent = 'caretrack/' + id + '/room/motion';
+        loadLatest(id);
+        pingTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
+        }, 20000);
+        refreshTimer = setInterval(() => loadLatest(id), 30000);
+      };
+
+      ws.onclose = () => {
+        if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+        setRoomConn('Reconnecting…', 'down');
+        reconnectTimer = setTimeout(() => connectWs(id), reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+      };
+
+      ws.onerror = () => setRoomConn('Error', 'down');
+
+      ws.onmessage = (evt) => {
+        try {
+          const m = JSON.parse(evt.data);
+          // Match device ID case-insensitively, or accept if empty
+          if (m.device_id && id && m.device_id.trim().toLowerCase() !== id.trim().toLowerCase()) return;
+
+          let ts = m.timestamp;
+          if (!ts || isNaN(new Date(ts).getTime()) || new Date(ts).getFullYear() < 2020) {
+            ts = new Date().toISOString();
+          }
+
+          // 1. Process batch data bundle (all metrics in one instant tick)
+          if (m.data) {
+            if (m.data.temperature !== undefined) updateCard('temp', m.data.temperature, ts);
+            if (m.data.humidity !== undefined) updateCard('hum', m.data.humidity, ts);
+            if (m.data.motion_detected !== undefined) updateMotion(m.data.motion_detected, ts);
+            if (m.data.status !== undefined) {
+              const online = String(m.data.status) === '1' || m.data.status === 'online';
+              const b = $('dev-status');
+              const db = $('dualDevStatus');
+              const str = online ? 'Online' : String(m.data.status);
+              const cls = 'badge ' + (online ? 'ok' : 'idle');
+              if (b) { b.textContent = str; b.className = cls; b.dataset.pinned = '1'; }
+              if (db) { db.textContent = str; db.className = cls; db.dataset.pinned = '1'; }
+              $('dev-status-ts').textContent = 'reported ' + fmtT(ts);
+              roomRow('status', m.data.status, ts);
+            }
+          }
+          // 2. Process individual metric
+          else if (m.metric) {
+            if (m.metric === 'temperature') updateCard('temp', m.value, ts);
+            else if (m.metric === 'humidity') updateCard('hum', m.value, ts);
+            else if (m.metric === 'motion_detected') updateMotion(m.value, ts);
+            else if (m.metric === 'status') {
+              const online = String(m.value) === '1' || m.value === 'online';
+              const b = $('dev-status');
+              const db = $('dualDevStatus');
+              const str = online ? 'Online' : String(m.value);
+              const cls = 'badge ' + (online ? 'ok' : 'idle');
+              if (b) { b.textContent = str; b.className = cls; b.dataset.pinned = '1'; }
+              if (db) { db.textContent = str; db.className = cls; db.dataset.pinned = '1'; }
+              $('dev-status-ts').textContent = 'reported ' + fmtT(ts);
+              roomRow('status', m.value, ts);
+            }
+          }
+
+          // Check for Fall Detection in incoming message
+          if (m.fall_detected || (m.data && m.data.fall_detected)) {
+            const mag = m.accel_magnitude || (m.data && m.data.accel_magnitude) || 3.8;
+            showFallAlert(mag);
+          }
+
+          lastSeenTs = ts;
+          $('last').textContent = fmtF(ts);
+          $('dualLast').textContent = fmtF(ts);
+          renderAgo();
+        } catch(e) {}
+      };
+    }
+
+    // ---------------------------------------------------------------------------
+    // Emergency Fall Alarm Audio & Alert Management
+    // ---------------------------------------------------------------------------
+    function playEmergencyAlarm() {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        [0, 0.22, 0.44].forEach((delaySec) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(880, ctx.currentTime + delaySec); // 880Hz alert tone
+          gain.gain.setValueAtTime(0.28, ctx.currentTime + delaySec);
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + delaySec + 0.16);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + delaySec);
+          osc.stop(ctx.currentTime + delaySec + 0.18);
+        });
+      } catch(e) {}
+    }
+
+    function showFallAlert(magnitude, scenarioName) {
+      // Debounce: ignore duplicate alerts within 5 seconds
+      const now = Date.now();
+      if (window.lastFallAlertTs && now - window.lastFallAlertTs < 5000) {
+        return; // Skip duplicate
+      }
+      window.lastFallAlertTs = now;
+      const banner = $('fallAlertBanner');
+      const details = $('fallAlertDetails');
+      const magStr = magnitude ? (Number(magnitude).toFixed(2) + 'g') : '3.85g';
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      if (details) {
+        details.innerHTML = '<strong>' + (scenarioName || 'High-G Impact Fall') + '</strong> — Recorded ' + magStr + ' deceleration shock at ' + timeStr + '. Immediate caregiver response dispatched!';
+      }
+      if (banner) {
+        banner.style.display = 'block';
+        banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      // Trigger audio chime
+      playEmergencyAlarm();
+
+      // Clinical Risk Engine Card Alarm
+      const elRisk = $('valRisk');
+      const dualRisk = $('dualValRisk');
+      if (elRisk) { elRisk.textContent = 'CRITICAL: FALL!'; elRisk.style.color = '#b4232a'; }
+      if (dualRisk) { dualRisk.textContent = 'CRITICAL: FALL!'; dualRisk.style.color = '#b4232a'; }
+
+      // Append emergency log entry
+      roomRow('FALL_DETECTED', magStr + ' SHOCK', new Date().toISOString());
+    }
+
+    function dismissFallAlert() {
+      const banner = $('fallAlertBanner');
+      if (banner) banner.style.display = 'none';
+      window.lastFallAlertTs = Date.now();
+    }
+
+    function doConnect() {
+      const val = $('device').value.trim();
+      if (!val) { $('device').focus(); return; }
+      deviceId = val;
+
+      // Persist in localStorage so user NEVER has to re-connect manually!
+      try {
+        localStorage.setItem('caretrack_device_id', deviceId);
+        const u = new URL(location.href);
+        u.searchParams.set('device', deviceId);
+        history.replaceState(null, '', u);
+      } catch(e) {}
+
+      tempHist.length = 0; humHist.length = 0; lastTemp = null; lastHum = null;
+      eventCount = 0; $('feed-count').textContent = '0 events';
+      const b = $('dev-status'); if (b) delete b.dataset.pinned;
+      connectWs(deviceId);
+    }
+
+    $('connect').addEventListener('click', doConnect);
+    $('device').addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
+
+    // ---------------------------------------------------------------------------
+    // 2. CARDIAC TELEMETRY (Persistent MQTT WSS to HiveMQ Cloud)
+    // ---------------------------------------------------------------------------
+    const MQTT_BROKER = "wss://592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud:8884/mqtt";
+    const MQTT_USER   = "room-kit";
+    const MQTT_PASS   = "Room-Kit@1";
+    const MQTT_TOPIC  = "cardiac/monitor/data";
+
+    let packetCounter = 0;
+    let telemetryChart = null;
+
+    // Initialize Chart.js
+    const ctx = document.getElementById('telemetryChart').getContext('2d');
+    const GRID = '#e7edeb', TICK = '#7a8f8a';
+    telemetryChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Heart rate (bpm)',
+            data: [],
+            borderColor: '#b4232a',
+            backgroundColor: 'rgba(180,35,42,0.07)',
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            yAxisID: 'y'
+          },
+          {
+            label: 'SpO2 (%)',
+            data: [],
+            borderColor: '#1a5c4c',
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [5, 4],
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            yAxisID: 'y1'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 250 },
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: {
+            grid: { color: GRID },
+            ticks: { color: TICK, font: { size: 11 }, maxTicksLimit: 6 }
+          },
+          y: {
+            type: 'linear',
+            position: 'left',
+            min: 40,
+            max: 130,
+            grid: { color: GRID },
+            ticks: { color: TICK, font: { size: 11 }, maxTicksLimit: 6 }
+          },
+          y1: {
+            type: 'linear',
+            position: 'right',
+            min: 75,
+            max: 100,
+            grid: { drawOnChartArea: false },
+            ticks: { color: TICK, font: { size: 11 }, maxTicksLimit: 5 }
+          }
+        },
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#4b5f5a', font: { size: 12 }, boxWidth: 16, boxHeight: 3, padding: 14 }
+          }
+        }
+      }
+    });
+
+    const cardioClientId = 'caretrack_web_' + Math.random().toString(16).substring(2, 8);
+    const cardioClient = mqtt.connect(MQTT_BROKER, {
+      clientId: cardioClientId,
+      username: MQTT_USER,
+      password: MQTT_PASS,
+      clean: true,
+      reconnectPeriod: 3000
+    });
+
+    cardioClient.on('connect', () => {
+      $('mqttStatus').className = "status-badge live";
+      $('statusText').innerText = "HiveMQ Live";
+      cardioClient.subscribe(MQTT_TOPIC);
+      cardioClient.subscribe("caretrack/+/wearable/motion");
+      const logEmpty = document.querySelector('.log-empty');
+      if (logEmpty) logEmpty.innerText = 'Connected! Subscribed to ' + MQTT_TOPIC;
+    });
+
+    cardioClient.on('close', () => {
+      $('mqttStatus').className = "status-badge down";
+      $('statusText').innerText = "Reconnecting…";
+    });
+
+    cardioClient.on('error', () => {
+      $('mqttStatus').className = "status-badge down";
+      $('statusText').innerText = "HiveMQ Error";
+    });
+
+    function setBadge(el, text, kind) {
+      if (!el) return;
+      el.innerText = text;
+      el.className = 'badge ' + kind;
+    }
+
+    cardioClient.on('message', (topic, message) => {
+      try {
+        const payload = JSON.parse(message.toString());
+        updateCardioDashboard(payload);
+      } catch (err) {}
+    });
+
+    function updateCardioDashboard(data) {
+      packetCounter++;
+      $('packetCount').innerText = packetCounter + (packetCounter === 1 ? ' packet' : ' packets');
+
+      const rawHr = Number(data.heart_rate || 0);
+      const rawSpo2 = Number(data.spo2 || 0);
+      const rawTemp = Number(data.temperature || 0);
+      const isFall = Boolean(data.fall_detected || (data.data && data.data.fall_detected));
+      const accelMag = data.accel_magnitude || (data.data && data.data.accel_magnitude) || 0;
+
+      if (isFall) {
+        showFallAlert(accelMag);
+      }
+
+      // Preserve last known valid non-zero vitals from live packet
+      if (rawHr > 0) lastValidHr = rawHr;
+      if (rawSpo2 > 0) lastValidSpo2 = Math.round(rawSpo2);
+      if (rawTemp > 20 && rawTemp < 50) lastValidTemp = rawTemp;
+
+      // Effective vitals: live values if active, otherwise retain last valid reading from database!
+      const hr = (rawHr > 0) ? rawHr : lastValidHr;
+      const spo2 = (rawSpo2 > 0) ? Math.round(rawSpo2) : lastValidSpo2;
+      const temp = (rawTemp > 0) ? rawTemp : lastValidTemp;
+
+      // Update Heart Rate
+      $('valBPM').innerText = hr > 0 ? hr : '--';
+      $('dualValBPM').innerText = hr > 0 ? hr : '--';
+      const heartIcon = $('heartSvg');
+      if (heartIcon) {
+        if (rawHr > 0) heartIcon.classList.add('pulsing');
+        else heartIcon.classList.remove('pulsing');
+      }
+
+      // Update SpO2 & Temp
+      $('valSpO2').innerText = spo2 > 0 ? spo2 : '--';
+      $('dualValSpO2').innerText = spo2 > 0 ? spo2 : '--';
+      $('valTemp').innerText = temp.toFixed(1);
+      $('dualValTemp').innerText = temp.toFixed(1);
+
+      // Clinical Risk Engine
+      let riskLevel = "Normal";
+      let riskColor = "#16794a";
+      let bpmStatusMsg = "Resting rhythm";
+      let bpmBadgeClass = "badge-normal";
+      let spo2StatusMsg = "Optimal";
+      let spo2BadgeClass = "badge-normal";
+
+      if (hr > 0 && hr < 55) {
+        bpmStatusMsg = "Bradycardia";
+        bpmBadgeClass = "badge-warning";
+        riskLevel = "Evaluate";
+        riskColor = "#92600a";
+      } else if (hr > 100) {
+        bpmStatusMsg = "Tachycardia";
+        bpmBadgeClass = "badge-alert";
+        riskLevel = "Evaluate";
+        riskColor = "#92600a";
+      }
+
+      if (spo2 > 0 && spo2 < 90) {
+        spo2StatusMsg = "Hypoxemia";
+        spo2BadgeClass = "badge-alert";
+        riskLevel = "Critical";
+        riskColor = "#b4232a";
+      } else if (spo2 > 0 && spo2 < 94) {
+        spo2StatusMsg = "Low saturation";
+        spo2BadgeClass = "badge-warning";
+        if (riskLevel === "Normal") {
+          riskLevel = "Attention";
+          riskColor = "#92600a";
+        }
+      }
+
+      setBadge($('bpmRangeStatus'), bpmStatusMsg, bpmBadgeClass);
+      setBadge($('dualBpmStatus'), bpmStatusMsg, bpmBadgeClass);
+      setBadge($('spo2Status'), spo2StatusMsg, spo2BadgeClass);
+      setBadge($('dualSpo2Status'), spo2StatusMsg, spo2BadgeClass);
+
+      if (temp < 35 || temp > 38) {
+        setBadge($('tempStatus'), 'Check sensor', 'badge-warning');
+      } else {
+        setBadge($('tempStatus'), 'Normal', 'badge-normal');
+      }
+
+      $('valRisk').innerText = riskLevel;
+      $('valRisk').style.color = riskColor;
+      $('dualValRisk').innerText = riskLevel;
+      $('dualValRisk').style.color = riskColor;
+
+      const now = new Date();
+      const nowStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      if (rawHr > 0 || rawSpo2 > 0) {
+        $('lastUpdateText').innerText = 'Live ' + nowStr;
+        $('dualLastUpdate').innerText = 'Live ' + nowStr;
+      }
+
+      // Update Chart.js (always keep in memory)
+      if (telemetryChart && hr > 0 && spo2 > 0) {
+        if (telemetryChart.data.labels.length > 25) {
+          telemetryChart.data.labels.shift();
+          telemetryChart.data.datasets[0].data.shift();
+          telemetryChart.data.datasets[1].data.shift();
+        }
+        telemetryChart.data.labels.push(nowStr);
+        telemetryChart.data.datasets[0].data.push(hr);
+        telemetryChart.data.datasets[1].data.push(spo2);
+        telemetryChart.update('none');
+      }
+
+      // Update Ingestion Log on new active readings
+      if (rawHr > 0 || rawSpo2 > 0) {
+        const logFeed = $('logFeed');
+        const empty = logFeed.querySelector('.log-empty');
+        if (empty) empty.remove();
+        const logRow = document.createElement("div");
+        logRow.className = "log-item fresh";
+        logRow.innerHTML =
+          '<span class="log-time">' + nowStr + '</span>' +
+          '<span class="log-data">HR <strong>' + hr + '</strong> bpm · SpO2 <strong>' + Math.round(spo2) + '%</strong> · ' + temp.toFixed(1) + ' °C</span>';
+        logFeed.prepend(logRow);
+        if (logFeed.children.length > 30) {
+          logFeed.removeChild(logFeed.lastChild);
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Initialization: Auto-Connect & Routing
+    // ---------------------------------------------------------------------------
+    window.addEventListener('DOMContentLoaded', () => {
+      // 1. Resolve Device ID (URL query -> localStorage -> fallback)
+      const urlParams = new URLSearchParams(location.search);
+      const urlDevice = urlParams.get('device');
+      const savedDevice = localStorage.getItem('caretrack_device_id');
+      deviceId = urlDevice || savedDevice || 'room-unit-01';
+
+      $('device').value = deviceId;
+      try { localStorage.setItem('caretrack_device_id', deviceId); } catch(e) {}
+
+      // AUTO-CONNECT & HYDRATE IMMEDIATELY! User never needs to press connect on reload.
+      loadLatest(deviceId);
+      connectWs(deviceId);
+
+      // 2. Resolve Active Tab (URL path / hash / query)
+      const path = location.pathname.toLowerCase();
+      const hash = location.hash.toLowerCase().replace('#', '');
+      const tabParam = urlParams.get('tab');
+
+      if (path === '/cardio' || hash === 'cardio' || tabParam === 'cardio') {
+        switchTab('cardio');
+      } else if (hash === 'dual' || tabParam === 'dual') {
+        switchTab('dual');
+      } else {
+        switchTab('room');
+      }
+    });
+  </script>
+</body>
+</html>

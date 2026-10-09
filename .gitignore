@@ -1,0 +1,33 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Arduino build artifacts
+*.hex
+*.bin
+*.elf
+build/
+
+# Node / Frontend artifacts
+node_modules/
+.expo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

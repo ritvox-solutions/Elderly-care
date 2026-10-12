@@ -1086,6 +1086,16 @@
     // SPA Tab Navigation (NO FULL RELOAD -> Background sockets stay permanently connected!)
     // ---------------------------------------------------------------------------
     let currentTab = 'room';
+    const bundledMetricKeys = new Set();
+
+    function bundleMetricKey(deviceId, ts, metric) {
+      return [deviceId || '', ts || '', metric].join('|');
+    }
+
+    function rememberBundleMetrics(deviceId, ts, data) {
+      if (bundledMetricKeys.size > 200) bundledMetricKeys.clear();
+      Object.keys(data || {}).forEach(metric => bundledMetricKeys.add(bundleMetricKey(deviceId, ts, metric)));
+    }
 
     function switchTab(tab) {
       currentTab = tab;
@@ -1401,7 +1411,9 @@
           }
 
           // 1. Process batch data bundle (all metrics in one instant tick)
-          if (m.data) {
+          const isRoomSensor = !m.sensor || m.sensor === 'room';
+          if (m.data && isRoomSensor) {
+            rememberBundleMetrics(m.device_id, ts, m.data);
             if (m.data.temperature !== undefined) updateCard('temp', m.data.temperature, ts);
             if (m.data.humidity !== undefined) updateCard('hum', m.data.humidity, ts);
             if (m.data.motion_detected !== undefined) updateMotion(m.data.motion_detected, ts);
@@ -1418,7 +1430,8 @@
             }
           }
           // 2. Process individual metric
-          else if (m.metric) {
+          else if (m.metric && isRoomSensor) {
+            if (bundledMetricKeys.has(bundleMetricKey(m.device_id, ts, m.metric))) return;
             if (m.metric === 'temperature') updateCard('temp', m.value, ts);
             else if (m.metric === 'humidity') updateCard('hum', m.value, ts);
             else if (m.metric === 'motion_detected') updateMotion(m.value, ts);

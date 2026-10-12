@@ -108,6 +108,14 @@ def parse_iso(ts: str | None) -> datetime:
     except Exception:
         return datetime.now(timezone.utc)
 
+def device_id_from_payload(payload: dict, topic: str) -> str:
+    if payload.get("device_id"):
+        return str(payload["device_id"]).strip()
+    if topic.startswith("cardiac/"):
+        return "ESP32-CardiacMonitor"
+    parts = topic.split("/")
+    return parts[1] if len(parts) > 1 and parts[0] == "caretrack" else "room-unit-01"
+
 def store_reading(device_id: str, sensor_type: str, metric: str, value, unit: str | None, ts: datetime):
     if isinstance(value, bool):
         val = 1.0 if value else 0.0
@@ -152,7 +160,7 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
-        device_id = str(payload.get("device_id", "room-unit-01")).strip()
+        device_id = device_id_from_payload(payload, msg.topic)
         sensor = payload.get("sensor", "wearable" if "wearable" in msg.topic or "cardiac" in msg.topic else "room")
         raw_ts = payload.get("timestamp")
         
@@ -264,9 +272,9 @@ async def websocket_endpoint(ws: WebSocket):
 def latest(device_id: str = Query(...)):
     with SessionLocal() as s:
         # Get latest room metrics
-        temp = s.query(Reading).filter(Reading.device_id==device_id, Reading.metric=="temperature").order_by(Reading.timestamp.desc()).first()
-        hum = s.query(Reading).filter(Reading.device_id==device_id, Reading.metric=="humidity").order_by(Reading.timestamp.desc()).first()
-        mot = s.query(Reading).filter(Reading.device_id==device_id, Reading.metric=="motion_detected").order_by(Reading.timestamp.desc()).first()
+        temp = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="temperature").order_by(Reading.timestamp.desc()).first()
+        hum = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="humidity").order_by(Reading.timestamp.desc()).first()
+        mot = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="motion_detected").order_by(Reading.timestamp.desc()).first()
 
         # Get latest valid heart rate (> 0) from database
         hr = s.query(Reading).filter(

@@ -1,0 +1,79 @@
+export type SensorType = 'room' | 'wearable' | string;
+
+export interface LatestReading {
+  value: number | null;
+  timestamp: string | null;
+}
+
+export interface LatestResponse {
+  device_id: string;
+  temperature: LatestReading | null;
+  humidity: LatestReading | null;
+  motion_detected: LatestReading | null;
+  heart_rate: LatestReading | null;
+  spo2: LatestReading | null;
+  cardio_temp: LatestReading | null;
+  last_seen: string | null;
+}
+
+// WebSocket messages from backend/main.py on_message():
+// 1. Bundle: { device_id, sensor, timestamp, data: {...}, fall_detected }
+// 2. Per-metric: { device_id, sensor, timestamp, metric, value, fall_detected }
+export interface WsBundleMessage {
+  device_id: string;
+  sensor?: string;
+  timestamp: string;
+  data: Record<string, number | string | boolean>;
+  fall_detected?: boolean;
+}
+
+export interface WsMetricMessage {
+  device_id: string;
+  sensor?: string;
+  timestamp: string;
+  metric: string;
+  value: number | string | boolean;
+  fall_detected?: boolean;
+}
+
+export type WsMessage = WsBundleMessage | WsMetricMessage;
+
+export function isBundle(m: WsMessage): m is WsBundleMessage {
+  return (m as WsBundleMessage).data !== undefined;
+}
+
+export interface TelemetryPoint {
+  t: number; // epoch ms
+  iso: string;
+  temperature?: number;
+  humidity?: number;
+  motion?: number;
+  heart_rate?: number;
+  spo2?: number;
+  body_temp?: number;
+  accel?: number;
+  fall?: boolean;
+}
+
+export type Status = 'normal' | 'watch' | 'critical' | 'idle' | 'offline';
+
+export interface AlertItem {
+  id: string;
+  type: string;
+  severity: 'WATCH' | 'CRITICAL';
+  message: string;
+  timestamp: string;
+  deviceId: string;
+  status: 'active' | 'acknowledged' | 'resolved';
+  acknowledgedBy?: string;
+  note?: string;
+}
+
+export interface Thresholds {
+  hrMin: number;
+  hrMax: number;
+  spo2Min: number;
+  roomTempMin: number;
+  roomTempMax: number;
+  inactivityHours: number;
+}

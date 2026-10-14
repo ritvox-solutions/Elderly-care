@@ -16,10 +16,6 @@ async function get(path: string) {
   return r2.json();
 }
 
-export async function fetchHealth(): Promise<{ status: string }> {
-  return get('/health');
-}
-
 export async function fetchLatest(deviceId: string): Promise<LatestResponse> {
   return get(`/readings/latest?device_id=${encodeURIComponent(deviceId)}`);
 }

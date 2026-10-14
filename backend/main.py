@@ -1,88 +1,47 @@
 import os
-import json
 import asyncio
+import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from dotenv import load_dotenv
-
 import paho.mqtt.client as mqtt
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import or_
 
-load_dotenv()
+from database import engine, Base, SessionLocal
+from models import Reading
+from core.alerting import process_emergency
+from routers.auth import router as auth_router
+from routers.thresholds import router as thresholds_router
+from routers.patients import router as patients_router
+from settings import get_settings
+from telemetry import TelemetryEvent, parse_telemetry
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:admin123@localhost:5432/caretrack")
-MQTT_BROKER_URL = os.getenv("MQTT_BROKER_URL", "broker.hivemq.com")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+settings = get_settings()
+IS_VERCEL = bool(os.getenv("VERCEL"))
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
-
-class Reading(Base):
-    __tablename__ = "readings"
-    id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(String, index=True)
-    sensor_type = Column(String)
-    metric = Column(String, index=True)
-    value = Column(Float)  # motion stored as 0/1
-    unit = Column(String, nullable=True)
-    timestamp = Column(DateTime(timezone=True), index=True)
-    received_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
-
+# Ensure tables exist (Alembic handles structured migrations in production)
 Base.metadata.create_all(bind=engine)
-
-from contextlib import asynccontextmanager
 
 main_loop: asyncio.AbstractEventLoop | None = None
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global main_loop
-    print("[App] Starting MQTT client")
-    main_loop = asyncio.get_running_loop()
-    mqtt_client.connect(MQTT_BROKER_URL, MQTT_PORT, 60)
-    mqtt_client.loop_start()
-    yield
-    print("[App] Shutting down MQTT client")
-    mqtt_client.loop_stop()
-    mqtt_client.disconnect()
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI(lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-# WebSocket manager
 class ConnectionManager:
     def __init__(self):
         self.active: List[WebSocket] = []
+
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
-        print(f"[WS] Client connected! Active listeners: {len(self.active)}")
+        print(f"[WS] Client connected. Active listeners: {len(self.active)}")
+
     def disconnect(self, ws: WebSocket):
         if ws in self.active:
             self.active.remove(ws)
             print(f"[WS] Client disconnected. Remaining: {len(self.active)}")
+
     async def broadcast(self, message: dict):
         dead = []
         for ws in list(self.active):
@@ -93,118 +52,98 @@ class ConnectionManager:
         for ws in dead:
             self.disconnect(ws)
 
+
 manager = ConnectionManager()
 
-def parse_iso(ts: str | None) -> datetime:
-    if not ts:
-        return datetime.now(timezone.utc)
-    try:
-        if ts.endswith("Z"):
-            ts = ts[:-1] + "+00:00"
-        dt = datetime.fromisoformat(ts)
-        if dt.year < 2020:
-            return datetime.now(timezone.utc)
-        return dt
-    except Exception:
-        return datetime.now(timezone.utc)
 
-def device_id_from_payload(payload: dict, topic: str) -> str:
-    if payload.get("device_id"):
-        return str(payload["device_id"]).strip()
-    if topic.startswith("cardiac/"):
-        return "ESP32-CardiacMonitor"
-    parts = topic.split("/")
-    return parts[1] if len(parts) > 1 and parts[0] == "caretrack" else "room-unit-01"
-
-def store_reading(device_id: str, sensor_type: str, metric: str, value, unit: str | None, ts: datetime):
-    if isinstance(value, bool):
-        val = 1.0 if value else 0.0
-    elif isinstance(value, (int, float)):
-        val = float(value)
-    else:
-        return
-    try:
-        with SessionLocal() as s:
-            r = Reading(
-                device_id=device_id,
-                sensor_type=sensor_type,
-                metric=metric,
-                value=val,
-                unit=unit,
-                timestamp=ts,
-                received_at=datetime.now(timezone.utc)
+def store_event(event: TelemetryEvent):
+    with SessionLocal() as s:
+        for reading in event.readings:
+            value = reading.value
+            val = 1.0 if isinstance(value, bool) and value else 0.0 if isinstance(value, bool) else float(value)
+            s.add(
+                Reading(
+                    device_id=event.device_id,
+                    sensor_type=event.sensor,
+                    metric=reading.metric,
+                    value=val,
+                    unit=reading.unit,
+                    timestamp=event.timestamp,
+                    received_at=datetime.now(timezone.utc),
+                )
             )
-            s.add(r)
-            s.commit()
-    except Exception as e:
-        print(f"[DB Error] store_reading: {e}")
+        s.commit()
 
-# MQTT handling
-mqtt_client = mqtt.Client()
-if MQTT_USERNAME:
-    mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-if MQTT_PORT == 8883:
+
+def alert_worker(event: TelemetryEvent):
+    """Evaluate a telemetry event for emergencies and email caregivers.
+
+    Runs in a thread-pool worker so SMTP/DB latency never blocks the MQTT
+    loop or the HTTP ingest endpoint. Ordinary telemetry returns from
+    detect_emergencies() before any database or network work happens.
+    """
+    try:
+        process_emergency(event)
+    except Exception as e:
+        print(f"[ALERT Error] process_emergency: {e}")
+
+
+def broadcast_messages(event: TelemetryEvent) -> list[dict]:
+    bundle = {
+        "device_id": event.device_id,
+        "sensor": event.sensor,
+        "timestamp": event.timestamp.isoformat(),
+        "data": event.data,
+        "fall_detected": event.fall_detected,
+    }
+    per_metric = [
+        {
+            "device_id": event.device_id,
+            "sensor": event.sensor,
+            "timestamp": event.timestamp.isoformat(),
+            "metric": reading.metric,
+            "value": reading.value,
+            "unit": reading.unit,
+            "fall_detected": event.fall_detected,
+        }
+        for reading in event.readings
+    ]
+    return [bundle, *per_metric]
+
+
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+if settings.mqtt_username:
+    mqtt_client.username_pw_set(settings.mqtt_username, settings.mqtt_password)
+if settings.mqtt_tls_enabled:
     mqtt_client.tls_set()
 
-def on_connect(client, userdata, flags, rc):
+
+def on_connect(client, userdata, flags, rc, properties=None):
     print(f"[MQTT] Connected rc={rc}")
-    client.subscribe("caretrack/+/room/environment")
-    client.subscribe("caretrack/+/room/motion")
-    client.subscribe("caretrack/+/status")
-    client.subscribe("caretrack/+/wearable/motion")
-    client.subscribe("caretrack/+/wearable/vitals")
-    client.subscribe("caretrack/+/wearable/#")
+    client.subscribe("caretrack/wearable/+")
+    client.subscribe("caretrack/room/+")
+    client.subscribe("caretrack/+/room/+")
+    client.subscribe("caretrack/+/wearable/+")
     client.subscribe("cardiac/monitor/data")
-    print("[MQTT] Subscribed to Room, Wearable (Motion/Fall), and Cardiac topics")
+    print("[MQTT] Subscribed to room and wearable telemetry topics")
+
 
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
-        device_id = device_id_from_payload(payload, msg.topic)
-        sensor = payload.get("sensor", "wearable" if "wearable" in msg.topic or "cardiac" in msg.topic else "room")
-        raw_ts = payload.get("timestamp")
-        
-        # Real-time clock synchronization: ensure valid, current ISO timestamp
-        ts = parse_iso(raw_ts)
-        valid_ts_str = ts.isoformat()
-        
-        # Extract data payload (supports both nested {"data": {...}} and flat schemas)
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            data = {k: v for k, v in payload.items() if k not in ("device_id", "sensor", "timestamp", "epoch")}
-            
-        if not data:
+        event = parse_telemetry(msg.topic, payload)
+        if event is None:
             return
 
-        is_fall = bool(data.get("fall_detected") or payload.get("fall_detected"))
-        if is_fall:
-            accel_mag = data.get("accel_magnitude", payload.get("accel_magnitude", 0.0))
-            print(f"\n🚨🚨🚨 [CRITICAL EMERGENCY] FALL DETECTED on {device_id} ({accel_mag}g)! 🚨🚨🚨\n")
+        if event.fall_detected:
+            accel_mag = event.data.get("accel_magnitude", 0.0)
+            print(f"\n[CRITICAL EMERGENCY] FALL DETECTED on {event.device_id} ({accel_mag}g)!\n")
 
-        # -------------------------------------------------------------------
-        # 1. ZERO-LATENCY REAL-TIME BROADCAST (< 1ms delivery to Frontend)
-        # Broadcast to active WebSockets IMMEDIATELY without waiting for DB!
-        # -------------------------------------------------------------------
+        if main_loop is not None:
+            main_loop.run_in_executor(None, alert_worker, event)
+
         if main_loop is not None and manager.active:
-            messages = []
-            # Full bundle
-            messages.append({
-                "device_id": device_id,
-                "sensor": sensor,
-                "timestamp": valid_ts_str,
-                "data": data,
-                "fall_detected": is_fall
-            })
-            # Per-metric messages for fine-grained frontend reactivity
-            for metric, value in data.items():
-                messages.append({
-                    "device_id": device_id,
-                    "sensor": sensor,
-                    "timestamp": valid_ts_str,
-                    "metric": metric,
-                    "value": value,
-                    "fall_detected": is_fall
-                })
+            messages = broadcast_messages(event)
 
             async def fast_broadcast(msgs=messages):
                 for m in msgs:
@@ -212,99 +151,202 @@ def on_message(client, userdata, msg):
 
             asyncio.run_coroutine_threadsafe(fast_broadcast(), main_loop)
 
-        # -------------------------------------------------------------------
-        # 2. ASYNCHRONOUS DATABASE RETENTION (Runs in threadpool, 0ms impact)
-        # -------------------------------------------------------------------
         if main_loop is not None:
             def db_worker():
-                for metric, value in data.items():
-                    unit = None
-                    if metric == "temperature":
-                        unit = "celsius"
-                    elif metric == "humidity":
-                        unit = "%"
-                    elif metric == "accel_magnitude":
-                        unit = "g"
-                    elif metric == "fall_detected":
-                        val = 1.0 if value else 0.0
-                        store_reading(device_id, sensor, "fall_detected", val, "alert", ts)
-                        continue
-                    elif metric == "status":
-                        val = 1.0 if value == "online" else 0.0
-                        store_reading(device_id, sensor, "status", val, None, ts)
-                        continue
-                    store_reading(device_id, sensor, metric, value, unit, ts)
+                try:
+                    store_event(event)
+                except Exception as e:
+                    print(f"[DB Error] store_event: {e}")
 
             main_loop.run_in_executor(None, db_worker)
 
-        if not is_fall:
-            print(f"[MQTT REALTIME] {msg.topic} -> broadcasted to {len(manager.active)} WS listener(s)")
+        if not event.fall_detected:
+            print(f"[MQTT] {msg.topic} -> {len(event.readings)} reading(s), {len(manager.active)} WS listener(s)")
     except Exception as e:
         print(f"[MQTT] Error processing message: {e}")
+
 
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
-# Static dashboard
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
-@app.get("/", response_class=HTMLResponse)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+    if IS_VERCEL:
+        print("[App] Running in Vercel Serverless environment: Skipping persistent MQTT background loop")
+    else:
+        print("[App] Starting MQTT client")
+        try:
+            mqtt_client.connect(settings.mqtt_broker_url, settings.mqtt_port, 60)
+            mqtt_client.loop_start()
+        except Exception as e:
+            print(f"[App Warning] Could not connect to MQTT broker ({settings.mqtt_broker_url}:{settings.mqtt_port}): {e}")
+    yield
+    if not IS_VERCEL:
+        print("[App] Shutting down MQTT client")
+        try:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+        except Exception:
+            pass
+
+
+app = FastAPI(
+    title="CareTrack IoT Healthcare API",
+    version="2.0.0",
+    description="CareTrack Remote Healthcare, Patient Telemetry, and Alerting Platform",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include Authentication Router
+app.include_router(auth_router)
+app.include_router(thresholds_router)
+app.include_router(patients_router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/")
 async def root():
-    with open("static/index.html", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+    """Service index — the legacy HTML dashboards were removed with backend/static."""
+    return {
+        "service": "CareTrack API",
+        "version": "2.0.0",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "api_prefix": "/api/v1",
+        "websocket": "/ws/live",
+    }
 
-@app.get("/cardio", response_class=HTMLResponse)
-async def cardio():
-    path = "static/cardio.html" if os.path.exists("static/cardio.html") else "static/index.html"
-    with open(path, encoding="utf-8") as f:
-        return HTMLResponse(f.read())
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(ws: WebSocket):
+    token = ws.query_params.get("token") or ws.headers.get("x-caretrack-ws-token")
+    if settings.ws_auth_token and token != settings.ws_auth_token:
+        await ws.close(code=1008)
+        return
     await manager.connect(ws)
     try:
         while True:
-            await ws.receive_text()  # keep alive
+            await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(ws)
+
 
 @app.get("/readings/latest")
 def latest(device_id: str = Query(...)):
     with SessionLocal() as s:
-        # Get latest room metrics
-        temp = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="temperature").order_by(Reading.timestamp.desc()).first()
-        hum = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="humidity").order_by(Reading.timestamp.desc()).first()
-        mot = s.query(Reading).filter(Reading.device_id==device_id, Reading.sensor_type=="room", Reading.metric=="motion_detected").order_by(Reading.timestamp.desc()).first()
+        temp = (
+            s.query(Reading)
+            .filter(
+                Reading.device_id == device_id,
+                Reading.sensor_type == "room",
+                Reading.metric.in_(["room_temp", "temperature"]),
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
+        hum = (
+            s.query(Reading)
+            .filter(
+                Reading.device_id == device_id,
+                Reading.sensor_type == "room",
+                Reading.metric == "humidity",
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
+        mot = (
+            s.query(Reading)
+            .filter(
+                Reading.device_id == device_id,
+                Reading.sensor_type == "room",
+                Reading.metric.in_(["motion", "motion_detected"]),
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
 
-        # Get latest valid heart rate (> 0) from database
-        hr = s.query(Reading).filter(
-            Reading.metric=="heart_rate",
-            Reading.value > 0,
-            (Reading.device_id==device_id) | (Reading.device_id=="room-unit-01")
-        ).order_by(Reading.timestamp.desc()).first()
+        hr = (
+            s.query(Reading)
+            .filter(
+                Reading.metric == "heart_rate",
+                Reading.value > 0,
+                or_(Reading.device_id == device_id, Reading.device_id == "room-unit-01"),
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
         if not hr:
-            hr = s.query(Reading).filter(Reading.metric=="heart_rate", Reading.value > 0).order_by(Reading.timestamp.desc()).first()
+            hr = (
+                s.query(Reading)
+                .filter(
+                    Reading.metric == "heart_rate",
+                    Reading.value > 0,
+                )
+                .order_by(Reading.timestamp.desc())
+                .first()
+            )
 
-        # Get latest valid SpO2 (> 0) from database
-        spo2 = s.query(Reading).filter(
-            Reading.metric=="spo2",
-            Reading.value > 0,
-            (Reading.device_id==device_id) | (Reading.device_id=="room-unit-01")
-        ).order_by(Reading.timestamp.desc()).first()
+        spo2 = (
+            s.query(Reading)
+            .filter(
+                Reading.metric == "spo2",
+                Reading.value > 0,
+                or_(Reading.device_id == device_id, Reading.device_id == "room-unit-01"),
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
         if not spo2:
-            spo2 = s.query(Reading).filter(Reading.metric=="spo2", Reading.value > 0).order_by(Reading.timestamp.desc()).first()
+            spo2 = (
+                s.query(Reading)
+                .filter(
+                    Reading.metric == "spo2",
+                    Reading.value > 0,
+                )
+                .order_by(Reading.timestamp.desc())
+                .first()
+            )
 
-        # Get latest wearable temperature
-        cardio_temp = s.query(Reading).filter(
-            Reading.metric=="temperature",
-            Reading.sensor_type=="wearable"
-        ).order_by(Reading.timestamp.desc()).first()
+        cardio_temp = (
+            s.query(Reading)
+            .filter(
+                Reading.metric.in_(["body_temp", "temperature"]),
+                Reading.sensor_type == "wearable",
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
 
-        # latest timestamp overall
-        last = s.query(Reading).filter(Reading.device_id==device_id).order_by(Reading.timestamp.desc()).first()
+        last = (
+            s.query(Reading)
+            .filter(
+                Reading.device_id == device_id,
+            )
+            .order_by(Reading.timestamp.desc())
+            .first()
+        )
+
         def fmt(r):
-            if not r: return None
+            if not r:
+                return None
             return {"value": r.value, "timestamp": r.timestamp.isoformat()}
+
         return {
             "device_id": device_id,
             "temperature": fmt(temp),
@@ -313,5 +355,27 @@ def latest(device_id: str = Query(...)):
             "heart_rate": fmt(hr),
             "spo2": fmt(spo2),
             "cardio_temp": fmt(cardio_temp),
-            "last_seen": last.timestamp.isoformat() if last else None
+            "last_seen": last.timestamp.isoformat() if last else None,
         }
+
+@app.post("/api/v1/telemetry/ingest")
+async def ingest_telemetry_http(payload: dict):
+    """
+    HTTP Telemetry Ingestion Webhook.
+    Allows microcontrollers or cloud relays to push telemetry directly over HTTP to Vercel.
+    """
+    topic = payload.get("topic", "caretrack/http_ingest")
+    event = parse_telemetry(topic, payload)
+    if event is None:
+        return {"status": "error", "message": "Invalid or unparseable telemetry payload"}
+
+    store_event(event)
+    # Emergency evaluation (fall / critical vitals -> alert + caregiver email)
+    # happens off the event loop so SMTP latency never delays the webhook.
+    asyncio.get_running_loop().run_in_executor(None, alert_worker, event)
+    return {
+        "status": "success",
+        "device_id": event.device_id,
+        "readings_stored": len(event.readings),
+        "timestamp": event.timestamp.isoformat(),
+    }

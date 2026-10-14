@@ -6,6 +6,8 @@ type Cardio = ReturnType<typeof useCardio>;
 export interface FallState {
   magnitude: number;
   at: string;
+  heightM?: number;
+  category?: string;
 }
 
 // VIEW 2: CARDIAC TELEMETRY — DOM copied from backend/static/index.html
@@ -29,7 +31,7 @@ export default function CardioView({
         <div className="meta">
           <span>{clock}</span>
           <span className="badge badge-normal">
-            {cardio.packets} packet{cardio.packets === 1 ? '' : 's'}
+            Live Stream
           </span>
         </div>
       </div>

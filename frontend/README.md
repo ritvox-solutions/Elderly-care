@@ -1,18 +1,19 @@
 # CareTrack React Frontend
 
-Vite + React + TypeScript port of the shipped dashboards in `backend/static/`
-(`index.html` / `cardio.html`). Same look, same behavior — no AI-generated styling.
+Vite + React + TypeScript dashboard for CareTrack. It replaces the legacy
+`backend/static/` HTML dashboards (`index.html` / `cardio.html`), which have
+been removed — same look, same behavior — no AI-generated styling.
 
 ## Design source
 
-- Stylesheet: `src/caretrack.css` is a verbatim copy of the `<style>` block from
-  `backend/static/index.html` (plus a few `.ct-*` helpers for History/Alerts/Settings
+- Stylesheet: `src/caretrack.css` was copied verbatim from the `<style>` block of
+  the legacy `backend/static/index.html` (plus a few `.ct-*` helpers for History/Alerts/Settings
   that reuse the same tokens). All markup uses the original class names
   (`header.top`, `.nav-tabs`, `.kpi`, `.badge`, `table.log`, `.kv`, `.chart-card`, …).
 - Charts: `chart.js` with the exact datasets/axes/options from the HTML
   (HR red solid filled, SpO2 teal dashed, dual y-axes).
 - Sparklines, emergency alarm tone, badge logic, risk engine, fall banner:
-  line-for-line ports of the inline `<script>` in `backend/static/index.html`.
+  line-for-line ports of the inline `<script>` from the legacy HTML dashboards.
 
 ## Quick start
 
@@ -30,9 +31,9 @@ python simulate_sensors.py
 ```
 
 The Vite dev server proxies `/health`, `/readings/*` and `/ws` to
-`http://localhost:8000`. Cardiac vitals connect **directly** to HiveMQ Cloud over
-secure WebSocket (same broker/credentials/topics as the HTML page), so the
-Cardiac tab works even without the backend running.
+`http://localhost:8000`. Cardiac vitals are relayed through the FastAPI backend
+over `/ws/live`; the browser no longer connects directly to HiveMQ or carries
+MQTT credentials.
 
 ## Routes
 

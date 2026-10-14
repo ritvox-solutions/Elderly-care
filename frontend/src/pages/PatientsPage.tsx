@@ -1,0 +1,197 @@
+import { useState, useEffect } from 'react';
+import { DEMO_PATIENTS, useApp } from '../lib/store';
+import type { Patient } from '../lib/types';
+import type { useCardio } from '../lib/useCardio';
+import type { useRoom } from '../lib/useRoom';
+import type { FallState } from '../views/CardioView';
+import PatientMonitor from '../views/PatientMonitor';
+
+export default function PatientsPage({
+  room,
+  cardio,
+  fall,
+  now,
+}: {
+  room: ReturnType<typeof useRoom>;
+  cardio: ReturnType<typeof useCardio>;
+  fall: FallState | null;
+  now: Date;
+}) {
+  const { selectedPatient, setSelectedPatient } = useApp();
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'ALL' | 'STABLE' | 'ATTENTION' | 'CRITICAL'>('ALL');
+  // Local drill-down state: when set, the combined Room + Wearable monitor
+  // for this patient is rendered in place of the directory (same page).
+  const [viewing, setViewing] = useState<Patient | null>(null);
+
+    const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
+
+  useEffect(() => {
+    fetch('/api/v1/patients')
+      .then((res) => {
+        if (res.ok) return res.json();
+        throw new Error('API offline');
+      })
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          const mapped: Patient[] = data.map((d: any) => ({
+            id: d.id,
+            firstName: d.first_name,
+            lastName: d.last_name,
+            age: d.age,
+            gender: d.gender,
+            roomNumber: d.room_number,
+            condition: d.condition,
+            status: d.status,
+            roomDeviceId: d.room_device_id,
+            wearableDeviceId: d.wearable_device_id,
+            vitals: d.vitals,
+            roomEnv: d.room_env,
+          }));
+          setPatients(mapped);
+        }
+      })
+      .catch(() => {
+        // Fallback to DEMO_PATIENTS silently
+      });
+  }, []);
+
+  const filtered = patients.filter((p) => {
+    const q = search.toLowerCase();
+    const matchesSearch =
+      `${p.firstName} ${p.lastName}`.toLowerCase().includes(q) ||
+      p.roomNumber.toLowerCase().includes(q) ||
+      p.condition.toLowerCase().includes(q);
+
+    const matchesFilter = filter === 'ALL' || p.status === filter;
+    return matchesSearch && matchesFilter;
+  });
+
+  const handleSelect = (patient: Patient) => {
+    setSelectedPatient(patient);
+    // Open the combined Room Unit + Wearable monitor for this patient
+    // inline on this page (the old separate Dual Overview page is gone).
+    setViewing(patient);
+  };
+
+  // Selected patient's monitor: room unit data (left) + wearable data (right)
+  if (viewing) {
+    return (
+      <PatientMonitor
+        room={room}
+        cardio={cardio}
+        fall={fall}
+        now={now}
+        patient={viewing}
+        onBack={() => setViewing(null)}
+      />
+    );
+  }
+
+  return (
+    <div className="view-section active">
+      <div className="page-head">
+        <div>
+          <h1>Patients Directory</h1>
+        </div>
+      </div>
+
+      {/* Search & Filter Toolbar */}
+      <div className="patient-toolbar">
+        <input
+          type="text"
+          className="ct-input patient-search-input"
+          placeholder="Search by name, room, or medical condition..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+
+        <div className="filter-pill-group">
+          {(['ALL', 'STABLE', 'ATTENTION', 'CRITICAL'] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={`filter-pill-btn ${filter === s ? 'active' : ''}`}
+              onClick={() => setFilter(s)}
+            >
+              {s === 'ALL' ? `All Patients (${patients.length})` : s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Patients Grid */}
+      <div className="patients-grid">
+        {filtered.map((p) => {
+          const isSelected = selectedPatient?.id === p.id;
+          const statusCls = p.status === 'CRITICAL' ? 'bad' : p.status === 'ATTENTION' ? 'warn' : 'ok';
+          const statusText = p.status === 'CRITICAL' ? 'High Fall Risk' : p.status === 'ATTENTION' ? 'Needs Attention' : 'Vitals Stable';
+
+          return (
+            <div
+              key={p.id}
+              className={`patient-card ${isSelected ? 'selected' : ''}`}
+              onClick={() => handleSelect(p)}
+            >
+              <div>
+                <div className="patient-card-header">
+                  <div className="patient-card-user">
+                    <div className={`patient-avatar ${statusCls}`}>
+                      {p.firstName[0]}
+                    </div>
+                    <div>
+                      <h3 className="patient-card-name">
+                        {p.firstName} {p.lastName}
+                      </h3>
+                      <div className="patient-card-sub">
+                        {p.age} yrs • {p.gender}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="patient-room-badge">
+                    {p.roomNumber}
+                  </div>
+                </div>
+
+                <div className="patient-condition-text">
+                  {p.condition}
+                </div>
+
+                <div className="patient-snapshot-grid">
+                  <div className="patient-snapshot-item">
+                    <span className="snapshot-label">Wearable Vitals</span>
+                    <span className="snapshot-value">
+                      ❤️ {p.vitals?.hr || 76} bpm • SpO2: {p.vitals?.spo2 || 98}%
+                    </span>
+                  </div>
+                  <div className="patient-snapshot-item">
+                    <span className="snapshot-label">Room Unit ({p.roomDeviceId})</span>
+                    <span className="snapshot-value">
+                      🌡️ {p.roomEnv?.temp || 23.5}°C • {p.roomEnv?.humidity || 48}% Hum
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="patient-card-footer">
+                <span className={`status-badge-text ${statusCls}`}>
+                  ● {statusText}
+                </span>
+                <button
+                  type="button"
+                  className="ct-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect(p);
+                  }}
+                >
+                  {isSelected ? 'Currently Monitoring ✓' : 'Monitor Patient →'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

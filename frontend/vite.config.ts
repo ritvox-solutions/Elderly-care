@@ -7,10 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // REST proxied to FastAPI backend (see backend/main.py)
       '/health': 'http://localhost:8000',
       '/readings': 'http://localhost:8000',
-      // WebSocket proxied to FastAPI /ws/live
+      '/api': 'http://localhost:8000',
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,

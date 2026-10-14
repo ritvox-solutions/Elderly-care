@@ -91,6 +91,10 @@ bool fallAlertActive = false; // indicates if fall alert is active
 bool fallTelemetrySent = false; // ensures fall alert sent only once per event
 uint32_t fallAlertStartMs = 0;
 float lastFallImpactG = 0.0f;
+float lastFallHeightM = 0.0f;
+uint16_t lastFallDurationMs = 0;
+char lastFallCategory[32] = "Normal";
+uint32_t freeFallDurationMs = 0;
 
 enum FallStage { FALL_IDLE, FALL_FREE_FALLING, FALL_WAITING_REST };
 FallStage fallStage = FALL_IDLE;
@@ -114,7 +118,7 @@ float lastTempC = 36.5f;
 int lastShownHr = 0, lastShownSpo2 = 0;
 
 struct Reading {
-  int hr; float spo2; float piPct; bool spo2Low; bool fallDetected; float accelG; uint32_t ms;
+  int hr; float spo2; float piPct; bool spo2Low; bool fallDetected; float accelG; float fallHeightM; uint16_t fallDurationMs; uint32_t ms;
 };
 QueueHandle_t readingQueue = nullptr;
 volatile bool netWifiUp = false, netMqttUp = false;
@@ -135,8 +139,8 @@ T medianVal(const T *arr, uint8_t n) {
   return tmp[n / 2];
 }
 
-void queueTelemetry(int hr, float spo2, float pi, bool low, bool fall, float accel) {
-  Reading r = {hr, spo2, pi, low, fall, accel, millis()};
+void queueTelemetry(int hr, float spo2, float pi, bool low, bool fall, float accel, float fallHeight = 0.0f, uint16_t fallDuration = 0) {
+  Reading r = {hr, spo2, pi, low, fall, accel, fallHeight, fallDuration, millis()};
   xQueueOverwrite(readingQueue, &r);
 }
 
@@ -306,9 +310,11 @@ void updateDisplay(int hr, int spo2Value) {
       display.setCursor(6, 16);
       display.print("FALL DETECT");
       display.setTextSize(1);
-      display.setCursor(4, 38);
-      display.printf("Shock: %.1f g", lastFallImpactG);
-      display.setCursor(4, 52);
+      display.setCursor(4, 34);
+      display.printf("Shock: %.1fg  H:~%.2fm", lastFallImpactG, lastFallHeightM);
+      display.setCursor(4, 44);
+      display.printf("Type: %s", lastFallCategory);
+      display.setCursor(4, 54);
       display.print("HELP REQUESTED ->");
       display.display();
       return;
@@ -418,17 +424,55 @@ bool readMPU6050(float &ax, float &ay, float &az, float &svm) {
   return true;
 }
 
-void triggerFallEmergency(float impactG) {
+// ---------------------------------------------------------------------------
+// Fall Height Kinematic & Biomechanical Estimator
+// ---------------------------------------------------------------------------
+// Free-fall duration kinematic model: h = 1/2 * g_eff * t^2
+// Empirical torso damping factor g_eff = ~8.83 m/s^2 (0.90 * g)
+// Fallback biomechanical shock model for sudden collapses without clear free-fall
+float calculateFallHeight(uint32_t durationMs, float impactG, const char* &category) {
+  float heightM = 0.0f;
+  
+  if (durationMs >= 90 && durationMs <= FALL_FREE_FALL_WINDOW) {
+    float tSec = (float)durationMs / 1000.0f;
+    heightM = 0.5f * 8.83f * tSec * tSec;
+  } else {
+    // Biomechanical impact shock regression
+    float gDiff = max(0.0f, impactG - 1.0f);
+    heightM = powf(gDiff, 1.35f) * 0.09f;
+  }
+
+  // Constrain within realistic physical limits for human falls (0.2m to 2.5m)
+  heightM = constrain(heightM, 0.20f, 2.50f);
+
+  if (heightM < 0.50f) {
+    category = "Low Level (<0.5m)";
+  } else if (heightM < 0.95f) {
+    category = "Bed/Chair Ht (0.5-0.9m)";
+  } else if (heightM < 1.65f) {
+    category = "Standing Ht (1.0-1.6m)";
+  } else {
+    category = "Elevated (>1.6m)";
+  }
+
+  return heightM;
+}
+
+void triggerFallEmergency(float impactG, uint32_t durationMs = 0, float heightM = 0.0f, const char* category = "Standing Ht") {
   fallAlertActive = true;
   fallAlertStartMs = millis();
   fallTelemetrySent = true;
   lastFallImpactG = impactG;
+  lastFallDurationMs = durationMs;
+  lastFallHeightM = heightM;
+  strncpy(lastFallCategory, category, sizeof(lastFallCategory) - 1);
   digitalWrite(ALERT_LED_PIN, HIGH);
-  Serial.printf("\n🚨 [CRITICAL ALERT] FALL DETECTED! Impact: %.2f g\n\n", impactG);
+  Serial.printf("\n🚨 [CRITICAL ALERT] FALL DETECTED! Impact: %.2f g | Duration: %u ms | Est. Height: ~%.2f m (%s)\n\n",
+                impactG, durationMs, heightM, category);
 
   queueTelemetry(lastShownHr > 0 ? lastShownHr : 82,
                  lastShownSpo2 > 0 ? (float)lastShownSpo2 : 95.0f,
-                 2.0f, false, true, impactG);
+                 2.0f, false, true, impactG, heightM, durationMs);
   updateDisplay(lastShownHr, lastShownSpo2);
 }
 
@@ -454,6 +498,7 @@ void processFallDetection() {
       if (svm > FALL_IMPACT_MIN_G) {
         impactOccurredMs = now;
         lastFallImpactG = svm;
+        freeFallDurationMs = (impactOccurredMs >= freeFallStartMs) ? (impactOccurredMs - freeFallStartMs) : 0;
         fallStage = FALL_WAITING_REST;
       } else if (now - freeFallStartMs > FALL_FREE_FALL_WINDOW) {
         fallStage = FALL_IDLE;
@@ -464,7 +509,9 @@ void processFallDetection() {
         fallStage = FALL_IDLE;
       } else if (now - impactOccurredMs >= FALL_REST_TIME_MS) {
         fallStage = FALL_IDLE;
-        triggerFallEmergency(lastFallImpactG);
+        const char *cat = "Standing Ht";
+        float estHeight = calculateFallHeight(freeFallDurationMs, lastFallImpactG, cat);
+        triggerFallEmergency(lastFallImpactG, freeFallDurationMs, estHeight, cat);
       }
       break;
   }

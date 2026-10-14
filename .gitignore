@@ -13,6 +13,25 @@ venv/
 ENV/
 env/
 
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.h
+config.h
+credentials.h
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
 # Arduino build artifacts
 *.hex
 *.bin

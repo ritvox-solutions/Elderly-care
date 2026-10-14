@@ -72,7 +72,7 @@ dhruva/
 ├── Project Synopsis ours.pdf      # VTU Project synopsis & academic concept proposal
 ├── research.pdf                   # Clinical and technical background research paper
 │
-├── backend/                       # FastAPI ingestion engine & static dashboard server
+├── backend/                       # FastAPI ingestion engine & API server
 │   ├── main.py                    # Application entry point, MQTT handler, WebSocket manager
 │   ├── schema.sql                 # PostgreSQL relational schema & indexes
 │   ├── simulate_sensors.py        # Python telemetry simulator for hardware-free testing
@@ -80,10 +80,13 @@ dhruva/
 │   ├── pyproject.toml / uv.lock   # uv package manager specifications
 │   ├── Pipfile                    # Pipenv configuration
 │   ├── .env                       # Active runtime environment secrets
-│   ├── .env.example               # Template environment configuration
-│   └── static/                    # Frontend dashboards served directly by FastAPI
-│       ├── index.html             # Unified CareTrack patient & room dashboard
-│       └── cardio.html            # Dedicated cardiac waveform & vital monitor
+│   └── .env.example               # Template environment configuration
+│
+├── frontend/                      # Vite + React web dashboard (main web UI)
+│   └── src/                       # Views, components, styles & API/WebSocket clients
+│
+├── mobile/                        # React Native (Expo) caregiver & patient app
+│   └── src/                       # Screens, components, fixtures & theme
 │
 ├── firmware/                      # Microcontroller source code
 │   ├── Room-Kit/
@@ -91,9 +94,6 @@ dhruva/
 │   └── wearbale/
 │       └── firmware/
 │           └── firmware.ino       # ESP32 sketch (MAX30102 + MPU6050 + OLED + HiveMQ)
-│
-├── web_dashboard/
-│   └── index.html                 # Standalone client dashboard with direct MQTT/WS support
 │
 └── docs/                          # Comprehensive system documentation
     ├── 1-Product-Requirements-Document.md  # PRD & scope
@@ -254,13 +254,13 @@ Navigate to the [`backend`](file:///c:/Users/HP/Desktop/Office/dhruva/backend) f
 
 ```env
 # PostgreSQL connection string
-DATABASE_URL=postgresql://postgres:admin123@localhost:5432/caretrack
+DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/caretrack
 
 # HiveMQ Cloud TLS Endpoint (Port 8883)
-MQTT_BROKER_URL=592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud
+MQTT_BROKER_URL=YOUR_HIVEMQ_CLUSTER.s1.eu.hivemq.cloud
 MQTT_PORT=8883
-MQTT_USERNAME=room-kit
-MQTT_PASSWORD=Room-Kit@1
+MQTT_USERNAME=YOUR_MQTT_USERNAME
+MQTT_PASSWORD=YOUR_MQTT_PASSWORD
 
 # FastAPI Server Host & Port
 APP_HOST=0.0.0.0
@@ -300,32 +300,29 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 ---
 
-## 🖥 Running & Accessing the Web Dashboards
+## 🖥 Running & Accessing the Web UI
 
-### 1. Integrated FastAPI Web Dashboard
-Once the backend server is running, open your web browser to:
+### 1. React Web App (Vite)
+The dashboards now live in [`frontend/`](file:///c:/Users/HP/Desktop/Office/dhruva/frontend) — the legacy `backend/static/` HTML dashboards were removed:
+
+```powershell
+cd c:\Users\HP\Desktop\Office\dhruva\frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api`, `/readings` and `/ws` to the backend.
 
 | Route | URL | Description |
 |---|---|---|
-| **Main Dashboard** | [http://localhost:8000](http://localhost:8000) | Unified CareTrack patient & room status monitor |
-| **Cardiac Monitor** | [http://localhost:8000/cardio](http://localhost:8000/cardio) | Focused real-time cardiac & PPG waveform viewer |
+| **Web App** | [http://localhost:5173](http://localhost:5173) | CareTrack patient & room status monitor (login required) |
+| **API Index** | [http://localhost:8000](http://localhost:8000) | Backend service index (JSON) |
 | **API Health** | [http://localhost:8000/health](http://localhost:8000/health) | Backend health check probe |
 | **Latest Vitals** | [http://localhost:8000/readings/latest?device_id=room-unit-01](http://localhost:8000/readings/latest?device_id=room-unit-01) | Query latest readings for a device |
+| **OpenAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | Interactive API documentation |
 
 #### Connecting on the Dashboard:
-- Enter your device ID: `room-unit-01` or `ESP32-CardiacMonitor` (or click the pre-filled connect button).
 - The dashboard automatically opens a WebSocket to `ws://localhost:8000/ws/live` and renders telemetry in real time.
-
----
-
-### 2. Standalone Web Dashboard
-The [`web_dashboard/index.html`](file:///c:/Users/HP/Desktop/Office/dhruva/web_dashboard/index.html) file can also be run independently using any static HTTP server:
-```powershell
-# Using Python's built-in HTTP server
-cd c:\Users\HP\Desktop\Office\dhruva\web_dashboard
-python -m http.server 3000
-```
-Then navigate to `http://localhost:3000`.
 
 ---
 
@@ -344,7 +341,7 @@ To verify the entire cloud ingestion, database retention, WebSocket broadcasting
    - Ambient room data (temperature, humidity, motion pulses).
    - Wearable data (heart rate, SpO₂, body temperature, accelerometer readings).
    - Simulates occasional fall incidents with critical acceleration peaks.
-4. Watch the updates instantly appear on your browser at [http://localhost:8000](http://localhost:8000)!
+4. Watch the updates instantly appear on your browser at [http://localhost:5173](http://localhost:5173)!
 
 ---
 

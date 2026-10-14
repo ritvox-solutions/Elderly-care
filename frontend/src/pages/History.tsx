@@ -135,11 +135,6 @@ export default function History({
           )}
         </div>
       </section>
-
-      <footer className="meta">
-        <span>note: FastAPI currently exposes only GET /readings/latest</span>
-        <span>history here is the live session buffer (last 120 points)</span>
-      </footer>
     </div>
   );
 }

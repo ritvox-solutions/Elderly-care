@@ -1,3 +1,25 @@
+export interface Patient {
+  id: string;
+  firstName: string;
+  lastName: string;
+  age: number;
+  gender: string;
+  roomNumber: string;
+  condition: string;
+  status: 'STABLE' | 'ATTENTION' | 'CRITICAL';
+  roomDeviceId: string;
+  wearableDeviceId: string;
+  vitals?: {
+    hr: number;
+    spo2: number;
+    temp: number;
+  };
+  roomEnv?: {
+    temp: number;
+    humidity: number;
+  };
+}
+
 export type SensorType = 'room' | 'wearable' | string;
 
 export interface LatestReading {

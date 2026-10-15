@@ -1,3 +1,4 @@
+import { useApp } from '../lib/store';
 import Spark from '../components/Spark';
 import { ago, fmtF, fmtT } from '../lib/format';
 import type { useRoom } from '../lib/useRoom';
@@ -20,6 +21,7 @@ export default function RoomView({
   sessionSince: string;
   now: Date;
 }) {
+  const { thresholds } = useApp();
   const stale = room.lastSeenTs ? now.getTime() - new Date(room.lastSeenTs).getTime() > 90000 : true;
   const link = { text: stale ? 'Stale' : 'Online', cls: stale ? 'badge stale' : 'badge ok' };
 
@@ -54,7 +56,10 @@ export default function RoomView({
               )}
             </div>
           </div>
-          <div className="kpi-sub">{room.tempTs ? `sensor · ${fmtT(room.tempTs)}` : 'no data yet'}</div>
+          <div className="kpi-sub">
+            {room.tempTs ? `sensor · ${fmtT(room.tempTs)}` : 'no data yet'}
+            {thresholds ? ` · Safe: ${thresholds.roomTempMin}–${thresholds.roomTempMax}°C` : ''}
+          </div>
           <div className="kpi-foot">
             <span className={room.tempTrendCls}>{room.tempTrend}</span>
             <Spark data={room.tempHist} />

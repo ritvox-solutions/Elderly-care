@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 class HeartRate(BaseModel):
     metric: Literal["heart_rate"] = "heart_rate"
-    value: float = Field(ge=20, le=240)
+    value: float = Field(ge=0, le=240)
     unit: Literal["bpm"] = "bpm"
 
 
@@ -70,7 +70,11 @@ class TelemetryEvent(BaseModel):
 
     @property
     def data(self) -> dict[str, float | bool]:
-        return {reading.metric: reading.value for reading in self.readings}
+        res = {reading.metric: reading.value for reading in self.readings}
+        if "motion" in res:
+            res["motion_detected"] = res["motion"]
+            res["motion_detection"] = res["motion"]
+        return res
 
     @property
     def fall_detected(self) -> bool:
@@ -114,6 +118,8 @@ def device_id_from_topic(topic: str, payload: dict[str, Any], sensor: str) -> st
     parts = topic.split("/")
     if len(parts) >= 4 and parts[0] == "caretrack":
         return parts[1]
+    if topic == "cardiac/monitor/data":
+        return "ESP32-CardiacMonitor"
     return "room-unit-01" if sensor == "room" else "wearable-01"
 
 
@@ -143,6 +149,9 @@ def normalized_items(topic: str, sensor: str, data: dict[str, Any]) -> list[tupl
         "humidity": "humidity",
         "motion": "motion",
         "motion_detected": "motion",
+        "motion_detection": "motion",
+        "motion_presence": "motion",
+        "pir": "motion",
         "status": "status",
     }
     items: list[tuple[str, Any]] = []
@@ -152,6 +161,8 @@ def normalized_items(topic: str, sensor: str, data: dict[str, Any]) -> list[tupl
             metric = "room_temp" if sensor == "room" or "/room/" in topic else "body_temp"
         elif key == "room_temp":
             metric = "room_temp"
+        elif metric is None and key == "value" and "motion" in topic:
+            metric = "motion"
         if metric:
             items.append((metric, value))
     return items
@@ -166,7 +177,15 @@ def validate_reading(metric: str, value: Any) -> ValidatedReading | None:
         if metric == "body_temp":
             return BodyTemp(value=value)
         if metric == "motion":
-            return Motion(value=value)
+            if isinstance(value, str):
+                v_clean = value.strip().lower()
+                if v_clean in ("yes", "y", "true", "1", "detected", "motion", "on"):
+                    value = True
+                elif v_clean in ("no", "n", "false", "0", "clear", "idle", "off"):
+                    value = False
+            elif isinstance(value, (int, float)):
+                value = bool(value > 0.5)
+            return Motion(value=bool(value))
         if metric == "fall_detected":
             return FallDetected(value=value)
         if metric == "room_temp":

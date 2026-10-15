@@ -11,6 +11,7 @@ from models.enums import (
 )
 from models.user import User, GUID
 from models.patient import Patient
+from models.patient_threshold import PatientThreshold
 from models.caregiver_assignment import CaregiverAssignment
 from models.device import Device, DevicePairing
 from models.reading import Reading
@@ -31,6 +32,7 @@ __all__ = [
     "NotificationStatus",
     "User",
     "Patient",
+    "PatientThreshold",
     "CaregiverAssignment",
     "Device",
     "DevicePairing",

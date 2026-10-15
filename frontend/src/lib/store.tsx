@@ -59,6 +59,22 @@ export const DEMO_PATIENTS: Patient[] = [
 
 
 
+
+export const DEMO_USERS: Record<UserRole, AuthUser> = {
+  CAREGIVER: {
+    id: 'usr-caregiver-01',
+    email: 'caregiver@caretrack.health',
+    fullName: 'Dr. Sarah Jenkins',
+    role: 'CAREGIVER',
+  },
+  PATIENT: {
+    id: 'usr-patient-01',
+    email: 'patient@caretrack.health',
+    fullName: 'Margaret Thatcher',
+    role: 'PATIENT',
+  },
+};
+
 const DEFAULTS: Thresholds = {
   hrMin: 60,
   hrMax: 100,
@@ -118,6 +134,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => localStorage.setItem('caretrack.deviceId', JSON.stringify(deviceId)), [deviceId]);
   useEffect(() => localStorage.setItem('caretrack.thresholds', JSON.stringify(thresholds)), [thresholds]);
   useEffect(() => localStorage.setItem('caretrack.profile', JSON.stringify(profileName)), [profileName]);
+
+  // Auto-sync patient thresholds from database whenever selected patient changes
+  useEffect(() => {
+    if (selectedPatient?.id) {
+      fetch(`/api/v1/thresholds?patient_id=${encodeURIComponent(selectedPatient.id)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data) {
+            const loaded: Thresholds = {
+              patientId: data.patient_id,
+              hrMin: Number(data.hr_min),
+              hrMax: Number(data.hr_max),
+              spo2Min: Number(data.spo2_min),
+              fallG: Number(data.fall_g ?? 3.0),
+              roomTempMin: Number(data.room_temp_min),
+              roomTempMax: Number(data.room_temp_max),
+              inactivityHours: 6,
+            };
+            setThresholdsState(loaded);
+            localStorage.setItem('caretrack.thresholds', JSON.stringify(loaded));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [selectedPatient?.id]);
+
   
   useEffect(() => {
     if (authUser) {

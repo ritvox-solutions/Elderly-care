@@ -92,10 +92,12 @@ export interface AlertItem {
 }
 
 export interface Thresholds {
+  patientId?: string;
   hrMin: number;
   hrMax: number;
   spo2Min: number;
+  fallG?: number;
   roomTempMin: number;
   roomTempMax: number;
-  inactivityHours: number;
+  inactivityHours?: number;
 }

@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-#define WIFI_SSID       "Gt"
+#define WIFI_SSID       "RUSTECEAN"
 #define WIFI_PASSWORD   "1234567890"
 
 #define MQTT_BROKER_URL "592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud"

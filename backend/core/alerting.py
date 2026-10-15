@@ -36,7 +36,7 @@ from models import (
     User,
     UserRole,
 )
-from routers.thresholds import ACTIVE_THRESHOLDS
+from routers.thresholds import ACTIVE_THRESHOLDS, get_patient_threshold_dict
 from settings import get_settings
 from telemetry import TelemetryEvent
 
@@ -94,7 +94,8 @@ def detect_emergencies(
         )
 
     hr = data.get("heart_rate")
-    if hr is not None and (hr < th["hr_min"] or hr > th["hr_max"]):
+    # Only alert if hr >= 30 (ignore 0 bpm finger-off / sensor idle state)
+    if hr is not None and hr >= 30 and (hr < th["hr_min"] or hr > th["hr_max"]):
         critical = hr < CRITICAL_HR_LOW or hr > CRITICAL_HR_HIGH
         found.append(
             Emergency(
@@ -110,7 +111,8 @@ def detect_emergencies(
         )
 
     spo2 = data.get("spo2")
-    if spo2 is not None and spo2 < th["spo2_min"]:
+    # Only alert if spo2 >= 50.0 (ignore 0% finger-off / optical calibration state)
+    if spo2 is not None and 50.0 <= spo2 < th["spo2_min"]:
         found.append(
             Emergency(
                 category=AlertCategory.CARDIAC,
@@ -125,7 +127,8 @@ def detect_emergencies(
         )
 
     body_temp = data.get("body_temp")
-    if body_temp is not None and (
+    # Only alert if body_temp >= 25.0 (ignore 0.0 or room ambient unworn sensor readings)
+    if body_temp is not None and body_temp >= 25.0 and (
         body_temp <= CRITICAL_BODY_TEMP_LOW or body_temp >= CRITICAL_BODY_TEMP_HIGH
     ):
         found.append(
@@ -270,13 +273,17 @@ def process_emergency(event: TelemetryEvent, db: Session | None = None) -> list[
     category, and metric) are suppressed so sustained breaches cannot
     flood inboxes.
     """
-    emergencies = detect_emergencies(event)
-    if not emergencies:
-        return []
-
     own_session = db is None
     if db is None:
         db = SessionLocal()
+
+    patient_id, label = _patient_context(db, event.device_id)
+    th = get_patient_threshold_dict(patient_id, db)
+    emergencies = detect_emergencies(event, thresholds=th)
+    if not emergencies:
+        if own_session:
+            db.close()
+        return []
 
     created: list[Alert] = []
     try:

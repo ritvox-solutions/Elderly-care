@@ -23,7 +23,21 @@ settings = get_settings()
 IS_VERCEL = bool(os.getenv("VERCEL"))
 
 # Ensure tables exist (Alembic handles structured migrations in production)
-Base.metadata.create_all(bind=engine)
+def init_db_with_retry(max_retries: int = 3, delay_sec: float = 2.0):
+    import time
+    for attempt in range(1, max_retries + 1):
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("[Database] Schema verified and connected successfully.")
+            return True
+        except Exception as e:
+            print(f"[Database] Connection attempt {attempt}/{max_retries} (Neon waking up): {e}")
+            if attempt < max_retries:
+                time.sleep(delay_sec)
+    print("[Database Warning] Could not verify schema on initial boot. Server running with runtime reconnects.")
+    return False
+
+init_db_with_retry()
 
 main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -96,8 +110,9 @@ def broadcast_messages(event: TelemetryEvent) -> list[dict]:
         "data": event.data,
         "fall_detected": event.fall_detected,
     }
-    per_metric = [
-        {
+    per_metric = []
+    for reading in event.readings:
+        per_metric.append({
             "device_id": event.device_id,
             "sensor": event.sensor,
             "timestamp": event.timestamp.isoformat(),
@@ -105,9 +120,17 @@ def broadcast_messages(event: TelemetryEvent) -> list[dict]:
             "value": reading.value,
             "unit": reading.unit,
             "fall_detected": event.fall_detected,
-        }
-        for reading in event.readings
-    ]
+        })
+        if reading.metric == "motion":
+            per_metric.append({
+                "device_id": event.device_id,
+                "sensor": event.sensor,
+                "timestamp": event.timestamp.isoformat(),
+                "metric": "motion_detected",
+                "value": reading.value,
+                "unit": reading.unit,
+                "fall_detected": event.fall_detected,
+            })
     return [bundle, *per_metric]
 
 
@@ -352,6 +375,7 @@ def latest(device_id: str = Query(...)):
             "temperature": fmt(temp),
             "humidity": fmt(hum),
             "motion_detected": fmt(mot),
+            "motion": fmt(mot),
             "heart_rate": fmt(hr),
             "spo2": fmt(spo2),
             "cardio_temp": fmt(cardio_temp),

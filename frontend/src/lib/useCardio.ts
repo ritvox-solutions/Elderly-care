@@ -1,3 +1,4 @@
+import { useApp } from './store';
 import mqtt from 'mqtt';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fmtT } from './format';
@@ -33,6 +34,7 @@ function pick(payload: Record<string, unknown>, key: string): unknown {
 }
 
 export function useCardio(onFall: (magnitude: number) => void) {
+  const { thresholds } = useApp();
   const [hr, setHr] = useState(0);
   const [spo2, setSpo2] = useState(0);
   const [temp, setTemp] = useState(36.5);
@@ -77,12 +79,16 @@ export function useCardio(onFall: (magnitude: number) => void) {
     let spo2StatusMsg = 'Optimal';
     let spo2BadgeClass: BadgeKind = 'badge-normal';
 
-    if (h > 0 && h < 55) {
+    const hrMin = thresholds?.hrMin ?? 50;
+    const hrMax = thresholds?.hrMax ?? 100;
+    const spo2Min = thresholds?.spo2Min ?? 92;
+
+    if (h > 0 && h < hrMin) {
       bpmStatusMsg = 'Bradycardia';
       bpmBadgeClass = 'badge-warning';
       riskLevel = 'Evaluate';
       riskColor = '#92600a';
-    } else if (h > 100) {
+    } else if (h > hrMax) {
       bpmStatusMsg = 'Tachycardia';
       bpmBadgeClass = 'badge-alert';
       riskLevel = 'Evaluate';
@@ -90,11 +96,11 @@ export function useCardio(onFall: (magnitude: number) => void) {
     }
 
     if (s > 0 && s < 90) {
-      spo2StatusMsg = 'Hypoxemia';
+      spo2StatusMsg = 'Critical Hypoxemia';
       spo2BadgeClass = 'badge-alert';
       riskLevel = 'Critical';
       riskColor = '#b4232a';
-    } else if (s > 0 && s < 94) {
+    } else if (s > 0 && s < spo2Min) {
       spo2StatusMsg = 'Low saturation';
       spo2BadgeClass = 'badge-warning';
       if (riskLevel === 'Normal') {

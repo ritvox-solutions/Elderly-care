@@ -3,10 +3,9 @@ import { BrowserRouter, Route, Routes, Navigate, useLocation, useNavigate } from
 import Chrome from './components/Chrome';
 import FallBanner from './components/FallBanner';
 import { playEmergencyAlarm } from './lib/alarm';
-import { pad } from './lib/format';
 import { useApp } from './lib/store';
 import { useCardio } from './lib/useCardio';
-import { useNow, clockStr, tzName } from './lib/useNow';
+import { useNow, clockStr } from './lib/useNow';
 import { useRoom } from './lib/useRoom';
 import Alerts from './pages/Alerts';
 import History from './pages/History';
@@ -53,11 +52,6 @@ function Shell() {
   }, [deviceId]);
 
   const now = useNow(1000);
-  const [tz] = useState(tzName);
-  const [sessionSince] = useState(() => {
-    const d = new Date();
-    return `since ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  });
 
   const toggleRole = () => {
     setRole(role === 'CAREGIVER' ? 'PATIENT' : 'CAREGIVER');

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { AuthUser, UserRole } from '../lib/store';
+import { DEMO_USERS } from '../lib/store';
 
 export default function AuthPage({
   onLogin,
@@ -144,6 +145,55 @@ export default function AuthPage({
         </div>
 
         <div className="auth-body">
+          {/* Direct Login for Two Roles */}
+          <div className="auth-direct-section">
+            <div className="auth-section-label">
+              <span>⚡ Direct Role Login</span>
+              <span className="auth-section-sub">One-click instant portal access</span>
+            </div>
+
+            <div className="auth-direct-cards">
+              {/* Care Taker Direct Login */}
+              <button
+                type="button"
+                className="auth-direct-btn caregiver"
+                onClick={() => onLogin(DEMO_USERS.CAREGIVER)}
+              >
+                <div className="auth-direct-icon">🩺</div>
+                <div className="auth-direct-content">
+                  <div className="auth-direct-header">
+                    <span className="auth-direct-role-badge caregiver">Care Taker</span>
+                    <span className="auth-direct-access">Ward &amp; Rooms Access</span>
+                  </div>
+                  <div className="auth-direct-name">Dr. Sarah Jenkins</div>
+                  <div className="auth-direct-hint">Patients Directory • Live Room Units • Wearable Telemetry</div>
+                </div>
+                <div className="auth-direct-arrow">→</div>
+              </button>
+
+              {/* Patient Direct Login */}
+              <button
+                type="button"
+                className="auth-direct-btn patient"
+                onClick={() => onLogin(DEMO_USERS.PATIENT)}
+              >
+                <div className="auth-direct-icon">👤</div>
+                <div className="auth-direct-content">
+                  <div className="auth-direct-header">
+                    <span className="auth-direct-role-badge patient">Patient</span>
+                    <span className="auth-direct-access">Personal Telemetry</span>
+                  </div>
+                  <div className="auth-direct-name">Margaret Thatcher</div>
+                  <div className="auth-direct-hint">My Wearable Vitals • Fall Alerts • Health Trends</div>
+                </div>
+                <div className="auth-direct-arrow">→</div>
+              </button>
+            </div>
+          </div>
+
+          <div className="auth-divider">
+            <span>or sign in with credentials</span>
+          </div>
           {/* Previous Login Quick Continue Card */}
           {previousUser && (
             <div className="auth-previous-login-card">

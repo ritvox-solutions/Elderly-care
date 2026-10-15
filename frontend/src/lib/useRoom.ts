@@ -1,3 +1,4 @@
+import { useApp } from './store';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchLatest, wsUrl } from './api';
 import { validTs } from './format';
@@ -37,6 +38,7 @@ function toNum(v: unknown): number | undefined {
 }
 
 export function useRoom(deviceId: string, opts: UseRoomOpts) {
+  const { thresholds } = useApp();
   const [temp, setTemp] = useState<number | null>(null);
   const [hum, setHum] = useState<number | null>(null);
   const [motion, setMotion] = useState<number | null>(null);
@@ -84,19 +86,23 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     setFeedCount((c) => c + 1);
   }, []);
 
-  // comfort() — copied from the HTML
+  // Evaluate comfort against user-configured dynamic thresholds
   const comfort = useCallback((t: number | null, h: number | null) => {
     let tText = '—',
       tCls = 'badge idle';
     let hText = '—',
       hCls = 'badge idle';
+
+    const minTemp = thresholds?.roomTempMin ?? 18;
+    const maxTemp = thresholds?.roomTempMax ?? 27;
+
     if (t !== null && isFinite(t)) {
-      if (t < 18) {
+      if (t < minTemp) {
         tText = 'Low';
-        tCls = 'badge stale';
-      } else if (t > 27) {
+        tCls = 'badge alert';
+      } else if (t > maxTemp) {
         tText = 'High';
-        tCls = 'badge stale';
+        tCls = 'badge alert';
       } else {
         tText = 'Normal';
         tCls = 'badge ok';
@@ -116,13 +122,28 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     }
     setTempFlag({ text: tText, cls: tCls });
     setHumFlag({ text: hText, cls: hCls });
-  }, []);
+  }, [thresholds?.roomTempMin, thresholds?.roomTempMax]);
+
+  // Immediately re-evaluate comfort flag whenever thresholds or comfort change
+  useEffect(() => {
+    if (lastTempRef.current !== null || lastHumRef.current !== null) {
+      comfort(lastTempRef.current, lastHumRef.current);
+    }
+  }, [comfort]);
 
   const updateMotion = useCallback(
     (val: unknown, ts: string, silent: boolean) => {
       if (val === null || val === undefined) return;
-      const on = Number(val) > 0.5;
-      setMotion(Number(val) > 0.5 ? 1 : 0);
+      let on = false;
+      if (typeof val === 'boolean') {
+        on = val;
+      } else if (typeof val === 'number') {
+        on = val > 0.5;
+      } else if (typeof val === 'string') {
+        const s = val.trim().toLowerCase();
+        on = s === 'yes' || s === 'true' || s === '1' || s === 'detected' || s === 'on' || s === 'motion';
+      }
+      setMotion(on ? 1 : 0);
       setMotionTs(ts);
       setMotionBadge(on ? { text: 'Motion', cls: 'badge motion-active' } : { text: 'Clear', cls: 'badge idle' });
       if (on) setLastMotionTs(ts);
@@ -201,13 +222,14 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
         );
         if (data.temperature !== undefined) updateCard('temp', data.temperature, ts, false);
         if (data.humidity !== undefined) updateCard('hum', data.humidity, ts, false);
-        if (data.motion_detected !== undefined) updateMotion(data.motion_detected, ts, false);
+        const motionVal = data.motion_detected ?? data.motion ?? data.motion_detection;
+        if (motionVal !== undefined) updateMotion(motionVal, ts, false);
         if (data.status !== undefined) applyStatus(data.status, ts);
       } else if (!isBundle(m) && isRoomSensor) {
         if (bundleKeys.current.has(`${m.device_id}|${ts}|${m.metric}`)) return;
         if (m.metric === 'temperature') updateCard('temp', m.value, ts, false);
         else if (m.metric === 'humidity') updateCard('hum', m.value, ts, false);
-        else if (m.metric === 'motion_detected') updateMotion(m.value, ts, false);
+        else if (m.metric === 'motion_detected' || m.metric === 'motion' || m.metric === 'motion_detection') updateMotion(m.value, ts, false);
         else if (m.metric === 'status') applyStatus(m.value, ts);
       }
 
@@ -235,8 +257,9 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
         const d = await fetchLatest(id);
         if (d.temperature) updateCard('temp', d.temperature.value, validTs(d.temperature.timestamp), true);
         if (d.humidity) updateCard('hum', d.humidity.value, validTs(d.humidity.timestamp), true);
-        if (d.motion_detected)
-          updateMotion(d.motion_detected.value, validTs(d.motion_detected.timestamp), true);
+        const mot = d.motion_detected ?? ((d as unknown as Record<string, any>).motion);
+        if (mot)
+          updateMotion((mot as any).value, validTs((mot as any).timestamp), true);
         const hrV = d.heart_rate?.value;
         if (hrV != null && hrV > 0) lastValidHr.current = Math.round(hrV);
         const spo2V = d.spo2?.value;

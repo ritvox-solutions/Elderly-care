@@ -48,6 +48,12 @@ export const MetricCard: React.FC<MetricCardProps> = ({
           text: theme.bad,
           border: theme.badBorder,
         };
+      case 'neutral':
+        return {
+          bg: theme.bg,
+          text: theme.text2,
+          border: theme.border,
+        };
       case 'ok':
       default:
         return {

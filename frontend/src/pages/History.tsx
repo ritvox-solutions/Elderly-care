@@ -92,8 +92,7 @@ export default function History({
           <div className="chart-container">
             {points.length < 2 ? (
               <div className="log-empty">
-                No buffered points for {meta.label} yet — keep a monitor tab open while the
-                simulator publishes.
+                No readings available for {meta.label} yet.
               </div>
             ) : (
               <HistoryChart points={points} color={meta.color} label={`${meta.label} (${meta.unit})`} />

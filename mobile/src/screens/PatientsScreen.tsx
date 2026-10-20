@@ -6,33 +6,39 @@ import {
   ScrollView,
   TextInput,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import {
   Search,
   UserCheck,
   ChevronRight,
-  Activity,
-  Heart,
-  Home,
-  ShieldAlert,
 } from 'lucide-react-native';
-import { DEMO_PATIENTS } from '../data/fixtures';
 import type { Patient } from '../types';
 import { theme } from '../theme';
 
 interface PatientsScreenProps {
+  patients: Patient[];
+  caregiverName: string;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
   onSelectPatient: (patient: Patient) => void;
   selectedPatientId?: string;
 }
 
 export const PatientsScreen: React.FC<PatientsScreenProps> = ({
+  patients,
+  caregiverName,
+  loading,
+  error,
+  onRetry,
   onSelectPatient,
   selectedPatientId,
 }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'STABLE' | 'ATTENTION' | 'CRITICAL'>('ALL');
 
-  const filtered = DEMO_PATIENTS.filter((p) => {
+  const filtered = patients.filter((p) => {
     const q = search.toLowerCase();
     const matchesSearch =
       `${p.firstName} ${p.lastName}`.toLowerCase().includes(q) ||
@@ -49,26 +55,26 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Assigned Patients Directory</Text>
         <Text style={styles.headerSubtitle}>
-          Attending Care Taker: Dr. Sarah Jenkins, RN • Tap any patient to monitor their live room unit &amp; wearable telemetry
+          Attending Care Taker: {caregiverName} • Tap any patient to monitor their live room unit &amp; wearable telemetry
         </Text>
       </View>
 
       {/* Ward Stats Summary */}
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
-          <Text style={styles.statVal}>3</Text>
+          <Text style={styles.statVal}>{patients.length}</Text>
           <Text style={styles.statLabel}>Assigned</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={[styles.statVal, { color: theme.ok }]}>1</Text>
+          <Text style={[styles.statVal, { color: theme.ok }]}>{patients.filter((p) => p.status === 'STABLE').length}</Text>
           <Text style={styles.statLabel}>Stable</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={[styles.statVal, { color: theme.warn }]}>1</Text>
+          <Text style={[styles.statVal, { color: theme.warn }]}>{patients.filter((p) => p.status === 'ATTENTION').length}</Text>
           <Text style={styles.statLabel}>Attention</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={[styles.statVal, { color: theme.bad }]}>1</Text>
+          <Text style={[styles.statVal, { color: theme.bad }]}>{patients.filter((p) => p.status === 'CRITICAL').length}</Text>
           <Text style={styles.statLabel}>High Risk</Text>
         </View>
       </View>
@@ -94,7 +100,7 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
             onPress={() => setFilter(s)}
           >
             <Text style={[styles.filterChipText, filter === s && styles.filterChipTextActive]}>
-              {s === 'ALL' ? 'All (3)' : s}
+              {s === 'ALL' ? `All (${patients.length})` : s}
             </Text>
           </TouchableOpacity>
         ))}
@@ -102,6 +108,16 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
 
       {/* Patients Card List */}
       <View style={styles.cardList}>
+        {loading && <ActivityIndicator color={theme.accent} />}
+        {!loading && error && (
+          <TouchableOpacity style={styles.messageCard} onPress={onRetry}>
+            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.retryText}>Tap to retry</Text>
+          </TouchableOpacity>
+        )}
+        {!loading && !error && filtered.length === 0 && (
+          <Text style={styles.emptyText}>No patients found.</Text>
+        )}
         {filtered.map((patient) => {
           const isSelected = selectedPatientId === patient.id;
           const isCritical = patient.status === 'CRITICAL';
@@ -147,18 +163,6 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
               <Text style={styles.conditionText} numberOfLines={2}>
                 {patient.condition}
               </Text>
-
-              {/* Hardware Pairing Badges */}
-              <View style={styles.deviceRow}>
-                <View style={styles.deviceBadge}>
-                  <Heart size={12} color={theme.accent} />
-                  <Text style={styles.deviceBadgeText}>{patient.wearableDeviceId}</Text>
-                </View>
-                <View style={styles.deviceBadge}>
-                  <Home size={12} color={theme.accent} />
-                  <Text style={styles.deviceBadgeText}>{patient.roomDeviceId}</Text>
-                </View>
-              </View>
 
               {/* Card Footer with CTA */}
               <View style={styles.cardFooter}>
@@ -278,6 +282,32 @@ const styles = StyleSheet.create({
   },
   cardList: {
     gap: 12,
+    minHeight: 80,
+  },
+  messageCard: {
+    backgroundColor: theme.badBg,
+    borderColor: theme.badBorder,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    alignItems: 'center',
+  },
+  errorText: {
+    color: theme.bad,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  retryText: {
+    color: theme.bad,
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  emptyText: {
+    color: theme.text3,
+    fontSize: 12,
+    textAlign: 'center',
+    paddingVertical: 20,
   },
   patientCard: {
     backgroundColor: theme.surface,
@@ -346,27 +376,6 @@ const styles = StyleSheet.create({
     color: theme.text2,
     lineHeight: 16,
     marginBottom: 10,
-  },
-  deviceRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  deviceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: theme.bg,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  deviceBadgeText: {
-    fontSize: 10.5,
-    color: theme.text2,
-    fontWeight: '600',
   },
   cardFooter: {
     flexDirection: 'row',

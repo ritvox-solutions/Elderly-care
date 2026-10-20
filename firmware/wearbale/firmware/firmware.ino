@@ -6,6 +6,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <Wire.h>
 #include "MAX30105.h"
@@ -14,20 +15,20 @@
 #include <Adafruit_SH110X.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include "secrets.h"
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-#define WIFI_SSID       "RUSTECEAN"
-#define WIFI_PASSWORD   "1234567890"
-
-#define MQTT_BROKER_URL "592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud"
-#define MQTT_PORT       8883
-#define MQTT_USERNAME   "room-kit"
-#define MQTT_PASSWORD   "Room-Kit@1"
-
 const char* MQTT_CLIENT_ID = "ESP32-CardiacMonitor";
 const char* MQTT_TOPIC     = "cardiac/monitor/data";
+
+#ifndef ALERT_INGEST_URL
+#define ALERT_INGEST_URL "https://elderly-care-api.vercel.app/api/v1/telemetry/ingest"
+#endif
+#ifndef TELEMETRY_INGEST_KEY
+#define TELEMETRY_INGEST_KEY ""
+#endif
 
 #define I2C_SDA_PIN     21
 #define I2C_SCL_PIN     22
@@ -234,8 +235,29 @@ void maintainNetwork() {
   }
 }
 
+bool postFallToBackend(const char* payload) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  for (uint8_t attempt = 1; attempt <= 3; ++attempt) {
+    WiFiClientSecure alertClient;
+    alertClient.setInsecure();
+    HTTPClient http;
+    http.setTimeout(7000);
+    if (!http.begin(alertClient, ALERT_INGEST_URL)) return false;
+    http.addHeader("Content-Type", "application/json");
+    if (strlen(TELEMETRY_INGEST_KEY)) http.addHeader("X-Telemetry-Key", TELEMETRY_INGEST_KEY);
+    int status = http.POST((uint8_t*)payload, strlen(payload));
+    http.end();
+    if (status >= 200 && status < 300) {
+      Serial.printf("[Backend Alert] Delivered (HTTP %d)\n", status);
+      return true;
+    }
+    Serial.printf("[Backend Alert] Attempt %u failed (HTTP %d)\n", attempt, status);
+    delay(500);
+  }
+  return false;
+}
+
 void publishReading(const Reading &r) {
-  if (!mqttClient.connected()) return;
   time_t now = time(nullptr);
   unsigned long epoch = (now > 1700000000) ? (unsigned long)now : 0UL;
 
@@ -250,18 +272,20 @@ void publishReading(const Reading &r) {
            lastTempC, r.piPct, r.fallDetected ? "true" : "false",
            r.accelG, (unsigned long)r.ms, epoch);
 
-  if (mqttClient.publish(MQTT_TOPIC, payload)) {
+  if (mqttClient.connected() && mqttClient.publish(MQTT_TOPIC, payload)) {
     Serial.printf("[HiveMQ Published -> %s] %s\n", MQTT_TOPIC, payload);
   }
 
   // Emergency Dual Publish for Fall Alert
   if (r.fallDetected) {
-    char fallPayload[256];
+    char fallPayload[320];
     snprintf(fallPayload, sizeof(fallPayload),
-             "{\"device_id\":\"room-unit-01\",\"sensor\":\"wearable\","
+             "{\"topic\":\"caretrack/room-unit-01/wearable/motion\","
+             "\"device_id\":\"ESP32-CardiacMonitor\",\"sensor\":\"wearable\","
              "\"timestamp\":%lu,\"data\":{\"fall_detected\":true,\"accel_magnitude\":%.2f}}",
              epoch ? epoch : (unsigned long)millis(), r.accelG);
-    mqttClient.publish("caretrack/room-unit-01/wearable/motion", fallPayload);
+    if (mqttClient.connected()) mqttClient.publish("caretrack/room-unit-01/wearable/motion", fallPayload);
+    postFallToBackend(fallPayload);
     Serial.printf("🚨 [EMERGENCY FALL DISPATCH] %s\n", fallPayload);
   }
 }

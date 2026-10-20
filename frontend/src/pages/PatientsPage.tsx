@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { DEMO_PATIENTS, useApp } from '../lib/store';
+import { fetchPatients } from '../lib/api';
 import type { Patient } from '../lib/types';
 import type { useCardio } from '../lib/useCardio';
 import type { useRoom } from '../lib/useRoom';
 import type { FallState } from '../views/CardioView';
 import PatientMonitor from '../views/PatientMonitor';
+import PatientOnboardingForm from '../components/PatientOnboardingForm';
 
 export default function PatientsPage({
   room,
@@ -17,43 +19,17 @@ export default function PatientsPage({
   fall: FallState | null;
   now: Date;
 }) {
-  const { selectedPatient, setSelectedPatient } = useApp();
+  const { authUser, selectedPatient, setSelectedPatient } = useApp();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'STABLE' | 'ATTENTION' | 'CRITICAL'>('ALL');
   // Local drill-down state: when set, the combined Room + Wearable monitor
   // for this patient is rendered in place of the directory (same page).
   const [viewing, setViewing] = useState<Patient | null>(null);
-
-    const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
 
   useEffect(() => {
-    fetch('/api/v1/patients')
-      .then((res) => {
-        if (res.ok) return res.json();
-        throw new Error('API offline');
-      })
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          const mapped: Patient[] = data.map((d: any) => ({
-            id: d.id,
-            firstName: d.first_name,
-            lastName: d.last_name,
-            age: d.age,
-            gender: d.gender,
-            roomNumber: d.room_number,
-            condition: d.condition,
-            status: d.status,
-            roomDeviceId: d.room_device_id,
-            wearableDeviceId: d.wearable_device_id,
-            vitals: d.vitals,
-            roomEnv: d.room_env,
-          }));
-          setPatients(mapped);
-        }
-      })
-      .catch(() => {
-        // Fallback to DEMO_PATIENTS silently
-      });
+    fetchPatients().then(setPatients).catch(() => {});
   }, []);
 
   const filtered = patients.filter((p) => {
@@ -88,12 +64,38 @@ export default function PatientsPage({
     );
   }
 
+  if (showOnboarding && authUser?.token) {
+    return (
+      <div className="view-section active">
+        <PatientOnboardingForm
+          token={authUser.token}
+          onCancel={() => setShowOnboarding(false)}
+          onCreated={(patient) => {
+            setPatients((current) => [patient, ...current.filter((item) => item.id !== patient.id)]);
+            setSelectedPatient(patient);
+            setShowOnboarding(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="view-section active">
       <div className="page-head">
         <div>
           <h1>Patients Directory</h1>
+          {!authUser?.token && <p>Sign in with a caregiver account to add patients.</p>}
         </div>
+        <button
+          type="button"
+          className="ct-btn patient-add-btn"
+          disabled={!authUser?.token}
+          title={!authUser?.token ? 'A verified caregiver login is required' : undefined}
+          onClick={() => setShowOnboarding(true)}
+        >
+          + Add Patient
+        </button>
       </div>
 
       {/* Search & Filter Toolbar */}
@@ -161,13 +163,13 @@ export default function PatientsPage({
                   <div className="patient-snapshot-item">
                     <span className="snapshot-label">Wearable Vitals</span>
                     <span className="snapshot-value">
-                      ❤️ {p.vitals?.hr || 76} bpm • SpO2: {p.vitals?.spo2 || 98}%
+                      ❤️ {p.vitals?.hr || '—'} bpm • SpO2: {p.vitals?.spo2 || '—'}%
                     </span>
                   </div>
                   <div className="patient-snapshot-item">
-                    <span className="snapshot-label">Room Unit ({p.roomDeviceId})</span>
+                    <span className="snapshot-label">Room Environment</span>
                     <span className="snapshot-value">
-                      🌡️ {p.roomEnv?.temp || 23.5}°C • {p.roomEnv?.humidity || 48}% Hum
+                      🌡️ {p.roomEnv?.temp || '—'}°C • {p.roomEnv?.humidity || '—'}% Hum
                     </span>
                   </div>
                 </div>

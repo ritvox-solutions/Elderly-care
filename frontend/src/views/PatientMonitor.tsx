@@ -1,9 +1,7 @@
-import { useState } from 'react';
-import { pad } from '../lib/format';
 import type { Patient } from '../lib/types';
 import type { useCardio } from '../lib/useCardio';
 import type { useRoom } from '../lib/useRoom';
-import { clockStr, tzName } from '../lib/useNow';
+import { clockStr } from '../lib/useNow';
 import CardioView, { type FallState } from './CardioView';
 import RoomView from './RoomView';
 
@@ -26,11 +24,6 @@ export default function PatientMonitor({
   patient: Patient;
   onBack: () => void;
 }) {
-  const [tz] = useState(tzName);
-  const [sessionSince] = useState(() => {
-    const d = new Date();
-    return `since ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  });
   const statusCls = patient.status === 'CRITICAL' ? 'bad' : patient.status === 'ATTENTION' ? 'warn' : 'ok';
   const statusText =
     patient.status === 'CRITICAL' ? 'High Fall Risk' : patient.status === 'ATTENTION' ? 'Needs Attention' : 'Vitals Stable';
@@ -60,10 +53,7 @@ export default function PatientMonitor({
         {/* LEFT: Room unit telemetry — same UI as the old Room Unit page */}
         <RoomView
           room={room}
-          deviceId={patient.roomDeviceId}
           clock={clock}
-          tz={tz}
-          sessionSince={sessionSince}
           now={now}
         />
 

@@ -29,6 +29,7 @@ export interface LatestReading {
 
 export interface LatestResponse {
   device_id: string;
+  wearable_device_id?: string | null;
   temperature: LatestReading | null;
   humidity: LatestReading | null;
   motion_detected: LatestReading | null;
@@ -58,7 +59,23 @@ export interface WsMetricMessage {
   fall_detected?: boolean;
 }
 
-export type WsMessage = WsBundleMessage | WsMetricMessage;
+export interface WsAlertMessage {
+  type: 'alert';
+  alert_id: string;
+  device_id: string;
+  timestamp: string;
+  category: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  metric: string;
+  value?: number;
+  message: string;
+}
+
+export type WsMessage = WsBundleMessage | WsMetricMessage | WsAlertMessage;
+
+export function isAlert(m: WsMessage): m is WsAlertMessage {
+  return (m as WsAlertMessage).type === 'alert';
+}
 
 export function isBundle(m: WsMessage): m is WsBundleMessage {
   return (m as WsBundleMessage).data !== undefined;

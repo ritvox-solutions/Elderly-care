@@ -1,9 +1,12 @@
 import { useApp } from './store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchLatest, wsUrl } from './api';
+import { fetchLatest, fetchLatestAlerts, wsUrl } from './api';
 import { validTs } from './format';
-import type { WsMessage } from './types';
-import { isBundle } from './types';
+import type { WsAlertMessage, WsMessage } from './types';
+import { isAlert } from './types';
+
+// MQTT direct subscription for sensor data
+import { connectMqtt, type MqttSession } from './mqttClient';
 
 export interface RoomFeedRow {
   time: string;
@@ -25,8 +28,9 @@ interface DbVitals {
 }
 
 interface UseRoomOpts {
-  onFall: (magnitude: number) => void;
   onDbVitals: (v: DbVitals) => void;
+  onAlert: (alert: WsAlertMessage) => void;
+  wearableDeviceId: string;
 }
 
 const MAX_RECONNECT_DELAY = 12000;
@@ -64,14 +68,24 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
 
   const lastTempRef = useRef<number | null>(null);
   const lastHumRef = useRef<number | null>(null);
-  const pinnedRef = useRef(false);
-  const bundleKeys = useRef<Set<string>>(new Set());
   const lastValidHr = useRef(0);
   const lastValidSpo2 = useRef(0);
-  const lastValidTemp = useRef(36.5);
+  const lastValidTemp = useRef(0);
   const retryRef = useRef(1000);
+  const hasLiveRoomData = useRef(false);
+  const seenAlerts = useRef<Set<string>>(new Set());
   const optsRef = useRef(opts);
-  optsRef.current = opts;
+
+  const deliverAlert = useCallback((alert: WsAlertMessage) => {
+    if (seenAlerts.current.has(alert.alert_id)) return;
+    if (seenAlerts.current.size > 200) seenAlerts.current.clear();
+    seenAlerts.current.add(alert.alert_id);
+    optsRef.current.onAlert(alert);
+  }, []);
+
+  useEffect(() => {
+    optsRef.current = opts;
+  }, [opts]);
 
   const pushBuffer = useCallback((t: number, tempV?: number, humV?: number) => {
     if (tempV === undefined && humV === undefined) return;
@@ -195,71 +209,40 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     [addFeedRow, comfort, pushBuffer],
   );
 
-  const applyStatus = useCallback(
-    (raw: unknown, ts: string) => {
-      const online = String(raw) === '1' || raw === 'online';
-      const str = online ? 'Online' : String(raw);
-      setDevStatus({ text: str, cls: `badge ${online ? 'ok' : 'idle'}` });
-      pinnedRef.current = true;
-      setDevStatusTs(`reported ${ts}`);
-      addFeedRow('status', String(raw), ts);
-    },
-    [addFeedRow],
-  );
-
   const applyMessage = useCallback(
     (m: WsMessage, id: string) => {
       if (!m || typeof m !== 'object') return;
-      if (m.device_id && id && m.device_id.trim().toLowerCase() !== id.trim().toLowerCase()) return;
-      const ts = validTs((m as { timestamp?: unknown }).timestamp);
+      const incomingId = m.device_id?.trim().toLowerCase();
+      const roomId = id.trim().toLowerCase();
+      const wearableId = optsRef.current.wearableDeviceId.trim().toLowerCase();
 
-      const isRoomSensor = !m.sensor || m.sensor === 'room';
-      if (isBundle(m) && isRoomSensor) {
-        const data = (m.data ?? {}) as Record<string, unknown>;
-        if (bundleKeys.current.size > 200) bundleKeys.current.clear();
-        Object.keys(data).forEach((metric) =>
-          bundleKeys.current.add(`${m.device_id}|${ts}|${metric}`),
-        );
-        if (data.temperature !== undefined) updateCard('temp', data.temperature, ts, false);
-        if (data.humidity !== undefined) updateCard('hum', data.humidity, ts, false);
-        const motionVal = data.motion_detected ?? data.motion ?? data.motion_detection;
-        if (motionVal !== undefined) updateMotion(motionVal, ts, false);
-        if (data.status !== undefined) applyStatus(data.status, ts);
-      } else if (!isBundle(m) && isRoomSensor) {
-        if (bundleKeys.current.has(`${m.device_id}|${ts}|${m.metric}`)) return;
-        if (m.metric === 'temperature') updateCard('temp', m.value, ts, false);
-        else if (m.metric === 'humidity') updateCard('hum', m.value, ts, false);
-        else if (m.metric === 'motion_detected' || m.metric === 'motion' || m.metric === 'motion_detection') updateMotion(m.value, ts, false);
-        else if (m.metric === 'status') applyStatus(m.value, ts);
+      if (isAlert(m)) {
+        if (incomingId === roomId || incomingId === wearableId) deliverAlert(m);
       }
-
-      // Fall detection on ANY incoming message (copied from the HTML)
-      const dataFall =
-        isBundle(m) && m.data && typeof m.data === 'object'
-          ? Boolean((m.data as Record<string, unknown>).fall_detected)
-          : false;
-      if (m.fall_detected || dataFall) {
-        const data = isBundle(m) ? ((m.data ?? {}) as Record<string, unknown>) : {};
-        const mag = Number(
-          (m as { accel_magnitude?: unknown }).accel_magnitude ?? data.accel_magnitude ?? 3.8,
-        );
-        optsRef.current.onFall(Number.isFinite(mag) ? mag : 3.8);
-      }
-
-      setLastSeenTs(ts);
     },
-    [applyStatus, updateCard, updateMotion],
+    [deliverAlert],
   );
+
+  useEffect(() => {
+    if (!deviceId || !opts.wearableDeviceId) return;
+    const since = new Date().toISOString();
+    const poll = () => fetchLatestAlerts([deviceId, optsRef.current.wearableDeviceId], since)
+      .then((alerts) => alerts.reverse().forEach(deliverAlert))
+      .catch(() => {});
+    const timer = window.setInterval(poll, 2000);
+    return () => window.clearInterval(timer);
+  }, [deviceId, opts.wearableDeviceId, deliverAlert]);
 
   const loadLatest = useCallback(
     async (id: string) => {
       try {
-        const d = await fetchLatest(id);
-        if (d.temperature) updateCard('temp', d.temperature.value, validTs(d.temperature.timestamp), true);
-        if (d.humidity) updateCard('hum', d.humidity.value, validTs(d.humidity.timestamp), true);
-        const mot = d.motion_detected ?? ((d as unknown as Record<string, any>).motion);
-        if (mot)
-          updateMotion((mot as any).value, validTs((mot as any).timestamp), true);
+        const d = await fetchLatest(id, optsRef.current.wearableDeviceId);
+        if (!hasLiveRoomData.current) {
+          if (d.temperature) updateCard('temp', d.temperature.value, validTs(d.temperature.timestamp), true);
+          if (d.humidity) updateCard('hum', d.humidity.value, validTs(d.humidity.timestamp), true);
+          const mot = d.motion_detected ?? ((d as unknown as Record<string, any>).motion);
+          if (mot) updateMotion((mot as any).value, validTs((mot as any).timestamp), true);
+        }
         const hrV = d.heart_rate?.value;
         if (hrV != null && hrV > 0) lastValidHr.current = Math.round(hrV);
         const spo2V = d.spo2?.value;
@@ -277,9 +260,9 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
               null,
           });
         }
-        if (d.last_seen) setLastSeenTs(validTs(d.last_seen));
+        if (d.last_seen && !hasLiveRoomData.current) setLastSeenTs(validTs(d.last_seen));
       } catch {
-        /* backend unreachable — live WS still works once up */
+        /* backend snapshot unavailable — direct MQTT can still provide live data */
       }
     },
     [updateCard, updateMotion],
@@ -290,13 +273,12 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     let closed = false;
     let ws: WebSocket | null = null;
     let pingTimer = 0;
-    let refreshTimer = 0;
     let reconnectTimer = 0;
 
     // Reset per-device state (copied from doConnect)
     lastTempRef.current = null;
     lastHumRef.current = null;
-    pinnedRef.current = false;
+    hasLiveRoomData.current = false;
     retryRef.current = 1000;
     setTempHist([]);
     setHumHist([]);
@@ -304,32 +286,26 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     setFeedCount(0);
     setBuffer([]);
 
+    void loadLatest(deviceId);
+
     const connect = () => {
       if (closed) return;
-      setConn({ text: 'Connecting…', mode: '' });
       const sock = new WebSocket(wsUrl());
       ws = sock;
       sock.onopen = () => {
-        setConn({ text: 'Live', mode: 'live' });
         retryRef.current = 1000;
-        loadLatest(deviceId);
         pingTimer = window.setInterval(() => {
           if (sock.readyState === WebSocket.OPEN) sock.send('ping');
         }, 20000);
-        refreshTimer = window.setInterval(() => loadLatest(deviceId), 30000);
       };
       sock.onclose = () => {
         window.clearInterval(pingTimer);
-        window.clearInterval(refreshTimer);
-        setConn({ text: 'Reconnecting…', mode: 'down' });
         if (!closed) {
           reconnectTimer = window.setTimeout(connect, retryRef.current);
           retryRef.current = Math.min(retryRef.current * 2, MAX_RECONNECT_DELAY);
         }
       };
-      sock.onerror = () => {
-        setConn({ text: 'Error', mode: 'down' });
-      };
+      sock.onerror = () => {};
       sock.onmessage = (evt) => {
         try {
           applyMessage(JSON.parse(evt.data as string) as WsMessage, deviceId);
@@ -343,15 +319,73 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
     return () => {
       closed = true;
       window.clearInterval(pingTimer);
-      window.clearInterval(refreshTimer);
       window.clearTimeout(reconnectTimer);
       try {
-        ws?.close();
+        const current = ws;
+        if (current?.readyState === WebSocket.OPEN) current.close();
+        else if (current?.readyState === WebSocket.CONNECTING) current.onopen = () => current.close();
       } catch {
         /* noop */
       }
     };
   }, [deviceId, applyMessage, loadLatest]);
+
+  // MQTT direct subscription for sensor data.
+  // Subscribe to: caretrack/{deviceId}/room/environment and caretrack/{deviceId}/room/motion
+  const updateCardRef = useRef(updateCard);
+  const updateMotionRef = useRef(updateMotion);
+  useEffect(() => {
+    updateCardRef.current = updateCard;
+    updateMotionRef.current = updateMotion;
+  }, [updateCard, updateMotion]);
+
+  useEffect(() => {
+    if (!deviceId || !import.meta.env.VITE_MQTT_BROKER_URL) return;
+    const mqttTopicRoomEnv = `caretrack/${deviceId}/room/environment`;
+    const mqttTopicRoomMotion = `caretrack/${deviceId}/room/motion`;
+
+    let mqttSession: MqttSession | null = null;
+    try {
+      mqttSession = connectMqtt({
+        label: 'MQTT',
+        topics: [mqttTopicRoomEnv, mqttTopicRoomMotion],
+        onConnect: () => {
+          setConn({ text: 'Room live', mode: 'live' });
+          setDevStatus({ text: 'Online', cls: 'badge ok' });
+          setDevStatusTs('Direct MQTT');
+        },
+        onClose: () => {
+          setConn({ text: 'Room reconnecting…', mode: 'down' });
+          setDevStatus({ text: 'Offline', cls: 'badge idle' });
+        },
+        onError: () => setConn({ text: 'Room offline', mode: 'down' }),
+        onMessage: (_topic, payload) => {
+          try {
+            const data = JSON.parse(payload.toString()) as Record<string, unknown>;
+            // Parse payload matching backend format:
+            // {"sensor":"room","timestamp":"...","data":{"temperature":xx,"humidity":yy,"motion_detected":bool}}
+            const room = (data.data ?? data) as Record<string, unknown>;
+            const { temperature, humidity, motion_detected } = room;
+            const ts = typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString();
+
+            hasLiveRoomData.current = true;
+            if (temperature !== undefined) updateCardRef.current('temp', temperature, ts, false);
+            if (humidity !== undefined) updateCardRef.current('hum', humidity, ts, false);
+            if (motion_detected !== undefined) updateMotionRef.current(motion_detected, ts, false);
+          } catch (e) {
+            console.error('[MQTT] Error parsing message:', e);
+          }
+        },
+      });
+    } catch (e) {
+      console.error('[MQTT] Failed to initialize MQTT client:', e);
+    }
+
+    return () => {
+      mqttSession?.close();
+      mqttSession = null;
+    };
+  }, [deviceId]);
 
   return {
     temp,

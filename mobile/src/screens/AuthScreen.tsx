@@ -21,6 +21,7 @@ import {
   Check,
 } from 'lucide-react-native';
 import { theme } from '../theme';
+import { loginUser, registerUser } from '../lib/api';
 
 export type UserRole = 'PATIENT' | 'CAREGIVER';
 
@@ -34,6 +35,21 @@ export interface AuthUser {
   patientRoom?: string;
   token?: string;
 }
+
+const DEMO_USERS: Record<UserRole, AuthUser> = {
+  CAREGIVER: {
+    id: 'usr-caregiver-01',
+    email: 'caregiver@caretrack.health',
+    fullName: 'Dr. Sarah Jenkins',
+    role: 'CAREGIVER',
+  },
+  PATIENT: {
+    id: 'usr-patient-01',
+    email: 'patient@caretrack.health',
+    fullName: 'Margaret Thatcher',
+    role: 'PATIENT',
+  },
+};
 
 interface AuthScreenProps {
   onLogin: (user: AuthUser) => void;
@@ -65,58 +81,17 @@ export function AuthScreen({ onLogin, previousUser }: AuthScreenProps) {
           throw new Error('Password must be at least 8 characters');
         }
 
-        // Try backend registration
-        try {
-          const regRes = await fetch('http://10.0.2.2:8000/api/v1/auth/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: email.trim().toLowerCase(),
-              password,
-              full_name: fullName.trim(),
-              role,
-              phone_number: phoneNumber.trim() || null,
-            }),
-          });
-
-          if (!regRes.ok) {
-            const errData = await regRes.json().catch(() => ({}));
-            if (errData.detail) throw new Error(errData.detail);
-          }
-        } catch (fetchErr: any) {
-          // Only swallow transport failures; surface server-side validation errors
-          if (fetchErr instanceof TypeError) {
-            console.log('Mobile auth register fetch warning:', fetchErr.message);
-          } else {
-            throw fetchErr;
-          }
-        }
+        await registerUser({
+          email: email.trim().toLowerCase(),
+          password,
+          full_name: fullName.trim(),
+          role,
+          phone_number: phoneNumber.trim() || null,
+        });
       }
 
       // Backend login - no offline fallback: a session must come from the server
-      let loginRes: Response;
-      try {
-        loginRes = await fetch('http://10.0.2.2:8000/api/v1/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: email.trim().toLowerCase(),
-            password,
-          }),
-        });
-      } catch (networkErr: any) {
-        console.log('Mobile login network warning:', networkErr.message);
-        throw new Error(
-          'Cannot reach the CareTrack server at 10.0.2.2:8000. Start the backend and try again.'
-        );
-      }
-
-      if (!loginRes.ok) {
-        const errData = await loginRes.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Incorrect email or password.');
-      }
-
-      const data = await loginRes.json();
+      const data = await loginUser(email.trim().toLowerCase(), password);
       onLogin({
         id: data.user.id,
         email: data.user.email,
@@ -173,6 +148,51 @@ export function AuthScreen({ onLogin, previousUser }: AuthScreenProps) {
                 Create Account
               </Text>
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.directSection}>
+            <Text style={styles.directLabel}>DIRECT ROLE LOGIN</Text>
+            <Text style={styles.directSub}>One-tap instant app access</Text>
+
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Continue as care taker Dr. Sarah Jenkins"
+              style={[styles.directCard, styles.caregiverCard]}
+              onPress={() => onLogin(DEMO_USERS.CAREGIVER)}
+            >
+              <View style={[styles.directIcon, { backgroundColor: theme.okBg }]}>
+                <ShieldCheck size={20} color={theme.ok} />
+              </View>
+              <View style={styles.directContent}>
+                <Text style={[styles.directRole, { color: theme.ok }]}>CARE TAKER · WARD ACCESS</Text>
+                <Text style={styles.directName}>Dr. Sarah Jenkins</Text>
+                <Text style={styles.directHint}>Patients · Room units · Wearable telemetry</Text>
+              </View>
+              <Text style={styles.directArrow}>›</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Continue as patient Margaret Thatcher"
+              style={[styles.directCard, styles.patientCard]}
+              onPress={() => onLogin(DEMO_USERS.PATIENT)}
+            >
+              <View style={[styles.directIcon, { backgroundColor: theme.badBg }]}>
+                <Heart size={20} color={theme.bad} />
+              </View>
+              <View style={styles.directContent}>
+                <Text style={[styles.directRole, { color: theme.bad }]}>PATIENT · PERSONAL TELEMETRY</Text>
+                <Text style={styles.directName}>Margaret Thatcher</Text>
+                <Text style={styles.directHint}>My vitals · Fall alerts · Health trends</Text>
+              </View>
+              <Text style={styles.directArrow}>›</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>OR SIGN IN WITH CREDENTIALS</Text>
+            <View style={styles.dividerLine} />
           </View>
 
           {/* Previous Login Detected Card */}
@@ -414,6 +434,85 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: theme.accent,
+  },
+  directSection: {
+    marginBottom: 16,
+  },
+  directLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: theme.text,
+    letterSpacing: 0.6,
+  },
+  directSub: {
+    fontSize: 10.5,
+    color: theme.text3,
+    marginTop: 2,
+    marginBottom: 9,
+  },
+  directCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 11,
+    marginBottom: 8,
+  },
+  caregiverCard: {
+    backgroundColor: '#f8fcf9',
+    borderColor: theme.okBorder,
+  },
+  patientCard: {
+    backgroundColor: '#fffafa',
+    borderColor: theme.badBorder,
+  },
+  directIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  directContent: {
+    flex: 1,
+  },
+  directRole: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.35,
+  },
+  directName: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: theme.text,
+    marginTop: 2,
+  },
+  directHint: {
+    fontSize: 10,
+    color: theme.text3,
+    marginTop: 2,
+  },
+  directArrow: {
+    fontSize: 24,
+    color: theme.text3,
+    marginLeft: 6,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: theme.border,
+  },
+  dividerText: {
+    fontSize: 8.5,
+    fontWeight: '700',
+    color: theme.text3,
+    marginHorizontal: 8,
   },
   previousLoginCard: {
     backgroundColor: '#e6f0ed',

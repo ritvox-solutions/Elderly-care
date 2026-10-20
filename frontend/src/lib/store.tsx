@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Thresholds, Patient } from './types';
+import { fetchPatientThresholds } from './api';
 
 export type UserRole = 'PATIENT' | 'CAREGIVER';
 
@@ -138,22 +139,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Auto-sync patient thresholds from database whenever selected patient changes
   useEffect(() => {
     if (selectedPatient?.id) {
-      fetch(`/api/v1/thresholds?patient_id=${encodeURIComponent(selectedPatient.id)}`)
-        .then((r) => (r.ok ? r.json() : null))
+      fetchPatientThresholds(selectedPatient.id)
         .then((data) => {
           if (data) {
-            const loaded: Thresholds = {
-              patientId: data.patient_id,
-              hrMin: Number(data.hr_min),
-              hrMax: Number(data.hr_max),
-              spo2Min: Number(data.spo2_min),
-              fallG: Number(data.fall_g ?? 3.0),
-              roomTempMin: Number(data.room_temp_min),
-              roomTempMax: Number(data.room_temp_max),
-              inactivityHours: 6,
-            };
-            setThresholdsState(loaded);
-            localStorage.setItem('caretrack.thresholds', JSON.stringify(loaded));
+            setThresholdsState(data);
+            localStorage.setItem('caretrack.thresholds', JSON.stringify(data));
           }
         })
         .catch(() => {});

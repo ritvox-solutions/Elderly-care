@@ -4,17 +4,18 @@
     "slug": "caretrack-elderly-care",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
-    "splash": {
-      "backgroundColor": "#020617"
-    },
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-notifications"
+    ],
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#020617"
-      }
+        "backgroundColor": "#134135"
+      },
+      "package": "com.anonymous.caretrackelderlycare"
     }
   }
 }

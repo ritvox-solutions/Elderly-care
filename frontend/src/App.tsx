@@ -13,11 +13,13 @@ import Settings from './pages/Settings';
 import PatientsPage from './pages/PatientsPage';
 import AuthPage from './pages/AuthPage';
 import CardioView, { type FallState } from './views/CardioView';
+import type { WsAlertMessage } from './lib/types';
 
 function Shell() {
   const { deviceId, role, setRole, authUser, selectedPatient, login, logout } = useApp();
-  const [activeId, setActiveId] = useState(deviceId);
+  const activeId = deviceId;
   const [fall, setFall] = useState<FallState | null>(null);
+  const [backendAlert, setBackendAlert] = useState<WsAlertMessage | null>(null);
   const lastFallRef = useRef(0);
   const feedRowRef = useRef<((metric: string, value: string, ts: string) => void) | null>(null);
 
@@ -37,19 +39,22 @@ function Shell() {
     feedRowRef.current?.('FALL_DETECTED', `${magnitude.toFixed(2)}g (~${estHeight.toFixed(2)}m)`, at);
   }, []);
 
-  const cardio = useCardio(handleFall);
+  const cardio = useCardio();
+  const handleBackendAlert = useCallback((alert: WsAlertMessage) => {
+    setBackendAlert(alert);
+    if (alert.category.toUpperCase() === 'FALL') handleFall(3.8);
+    else playEmergencyAlarm();
+    feedRowRef.current?.('AMPV_VERIFIED', alert.message, alert.timestamp);
+  }, [handleFall]);
   const room = useRoom(activeId, {
-    onFall: handleFall,
     onDbVitals: cardio.hydrateDb,
+    onAlert: handleBackendAlert,
+    wearableDeviceId: selectedPatient.wearableDeviceId,
   });
 
   useEffect(() => {
     feedRowRef.current = room.addFeedRow;
   });
-
-  useEffect(() => {
-    setActiveId(deviceId);
-  }, [deviceId]);
 
   const now = useNow(1000);
 
@@ -102,6 +107,20 @@ function Shell() {
         {fall && (
           <FallBanner magnitude={fall.magnitude} at={fall.at} heightM={fall.heightM} category={fall.category} onDismiss={() => setFall(null)} />
         )}
+        {backendAlert && (
+          <div className="fall-alert-banner">
+            <div className="fall-alert-content">
+              <div className="fall-alert-icon">⚠️</div>
+              <div className="fall-alert-text">
+                <strong>{backendAlert.severity} {backendAlert.category} ALERT</strong>
+                <span>{backendAlert.message}</span>
+              </div>
+              <button type="button" className="fall-alert-btn" onClick={() => setBackendAlert(null)}>
+                Acknowledge &amp; Dismiss
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <main>
         <Routes>
@@ -129,7 +148,7 @@ function Shell() {
           <Route path="/history" element={<History room={room} cardio={cardio} />} />
           <Route
             path="/alerts"
-            element={<Alerts fall={fall} hr={cardio.hr} spo2={cardio.spo2} deviceId={activeId} />}
+            element={<Alerts backendAlert={backendAlert} />}
           />
           <Route
             path="/settings"

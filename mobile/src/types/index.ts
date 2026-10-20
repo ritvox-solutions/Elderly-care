@@ -5,6 +5,7 @@ export interface LatestReading {
 
 export interface LatestResponse {
   device_id: string;
+  wearable_device_id?: string | null;
   temperature: LatestReading | null;
   humidity: LatestReading | null;
   motion_detected: LatestReading | null;

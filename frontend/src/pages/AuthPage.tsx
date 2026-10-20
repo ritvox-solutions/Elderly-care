@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { AuthUser, UserRole } from '../lib/store';
 import { DEMO_USERS } from '../lib/store';
+import { API_BASE_URL } from '../lib/api';
 
 export default function AuthPage({
   onLogin,
@@ -44,7 +45,7 @@ export default function AuthPage({
           throw new Error('Password must be at least 8 characters long');
         }
 
-        const regRes = await fetch('/api/v1/auth/register', {
+        const regRes = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -63,7 +64,7 @@ export default function AuthPage({
       }
 
       // Perform Login
-      const loginRes = await fetch('/api/v1/auth/login', {
+      const loginRes = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -92,7 +93,7 @@ export default function AuthPage({
           (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')))
       ) {
         setError(
-          'Cannot reach the CareTrack server. Make sure the backend is running on http://localhost:8000, then try again.'
+          `Cannot reach the CareTrack server at ${API_BASE_URL}. Please try again.`
         );
       } else {
         setError(err.message || 'Authentication error');

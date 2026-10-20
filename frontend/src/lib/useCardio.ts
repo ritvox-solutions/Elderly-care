@@ -1,13 +1,9 @@
 import { useApp } from './store';
-import mqtt from 'mqtt';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fmtT } from './format';
+import { connectMqtt, type MqttSession } from './mqttClient';
 
-// HiveMQ Cloud TLS endpoint — mirrors backend/static/index.html and backend/.env
-const MQTT_BROKER = 'wss://592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud:8884/mqtt';
-const MQTT_USER = 'room-kit';
-const MQTT_PASS = 'Room-Kit@1';
-const MQTT_TOPIC = 'cardiac/monitor/data';
+// MQTT direct subscription for cardiac data
 
 export interface CardioPoint {
   t: number;
@@ -33,11 +29,11 @@ function pick(payload: Record<string, unknown>, key: string): unknown {
   return undefined;
 }
 
-export function useCardio(onFall: (magnitude: number) => void) {
+export function useCardio() {
   const { thresholds } = useApp();
   const [hr, setHr] = useState(0);
   const [spo2, setSpo2] = useState(0);
-  const [temp, setTemp] = useState(36.5);
+  const [temp, setTemp] = useState(0);
   const [pulsing, setPulsing] = useState(false);
   const [bpmBadge, setBpmBadge] = useState({ text: '—', cls: 'badge-normal' as BadgeKind });
   const [spo2Badge, setSpo2Badge] = useState({ text: '—', cls: 'badge-normal' as BadgeKind });
@@ -46,17 +42,15 @@ export function useCardio(onFall: (magnitude: number) => void) {
   const [riskColor, setRiskColor] = useState('#16794a');
   const [lastUpdate, setLastUpdate] = useState('Waiting for telemetry…');
   const [packets, setPackets] = useState(0);
-  const [mqttConn, setMqttConn] = useState({ text: 'HiveMQ…', mode: '' });
+  const [mqttConn, setMqttConn] = useState({ text: 'Connecting wearable…', mode: '' });
   const [points, setPoints] = useState<CardioPoint[]>([]);
   const [feed, setFeed] = useState<CardioFeedRow[]>([]);
   const [buffer, setBuffer] = useState<CardioPoint[]>([]);
 
   const lastValidHr = useRef(0);
   const lastValidSpo2 = useRef(0);
-  const lastValidTemp = useRef(36.5);
-  const onFallRef = useRef(onFall);
-  onFallRef.current = onFall;
-
+  const lastValidTemp = useRef(0);
+  const hasLiveData = useRef(false);
   // Clinical Risk Engine — copied verbatim from backend/static/index.html
   const runEngine = useCallback((rawHr: number, rawSpo2: number, rawTemp: number, liveLabel: string | null) => {
     if (rawHr > 0) lastValidHr.current = rawHr;
@@ -112,9 +106,11 @@ export function useCardio(onFall: (magnitude: number) => void) {
     setBpmBadge({ text: bpmStatusMsg, cls: bpmBadgeClass });
     setSpo2Badge({ text: spo2StatusMsg, cls: spo2BadgeClass });
     setTempBadge(
-      t < 35 || t > 38
-        ? { text: 'Check sensor', cls: 'badge-warning' }
-        : { text: 'Normal', cls: 'badge-normal' },
+      t <= 0
+        ? { text: '—', cls: 'badge-normal' }
+        : t < 35 || t > 38
+          ? { text: 'Check sensor', cls: 'badge-warning' }
+          : { text: 'Normal', cls: 'badge-normal' },
     );
     setRisk(riskLevel);
     setRiskColor(riskColor);
@@ -134,72 +130,82 @@ export function useCardio(onFall: (magnitude: number) => void) {
       });
       setFeed((p) => [{ time: nowStr, hr: h, spo2: Math.round(s), temp: t }, ...p].slice(0, 30));
     }
-  }, []);
+  }, [thresholds?.hrMin, thresholds?.hrMax, thresholds?.spo2Min]);
 
   // Database hydration on boot — mirrors loadLatest() in the HTML
   const hydrateDb = useCallback(
     (v: { hr: number; spo2: number; temp: number; ts: string | null }) => {
-      runEngine(0, 0, v.temp, null);
+      if (hasLiveData.current) return;
+      runEngine(v.hr, v.spo2, v.temp, null);
       if (v.ts) setLastUpdate(`Last recorded ${fmtT(v.ts)}`);
     },
     [runEngine],
   );
 
+  // MQTT direct subscription for cardiac data.
+  // Subscribe to: cardiac/monitor/data
+  const mqttTopicCardiac = 'cardiac/monitor/data';
+
+  // runEngine depends on the patient thresholds, which change when a caregiver
+  // edits them. Reading it through a ref keeps the MQTT subscription stable so
+  // threshold edits do not tear down and re-open the broker connection.
+  const runEngineRef = useRef(runEngine);
   useEffect(() => {
-    const clientId = `caretrack_web_${Math.random().toString(16).substring(2, 8)}`;
-    const client = mqtt.connect(MQTT_BROKER, {
-      clientId,
-      username: MQTT_USER,
-      password: MQTT_PASS,
-      clean: true,
-      reconnectPeriod: 3000,
-    });
+    runEngineRef.current = runEngine;
+  }, [runEngine]);
 
-    client.on('connect', () => {
-      setMqttConn({ text: 'HiveMQ Live', mode: 'live' });
-      client.subscribe(MQTT_TOPIC);
-      client.subscribe('caretrack/+/wearable/motion');
-    });
-    client.on('close', () => setMqttConn({ text: 'Reconnecting…', mode: 'down' }));
-    client.on('error', () => setMqttConn({ text: 'HiveMQ Error', mode: 'down' }));
+  // Set up the direct broker subscription once, and tear it down on unmount.
+  useEffect(() => {
+    if (!import.meta.env.VITE_MQTT_BROKER_URL) return;
+    let session: MqttSession | null = null;
+    try {
+      session = connectMqtt({
+        label: 'MQTT-CARDIO',
+        topics: [mqttTopicCardiac],
+        onConnect: () => setMqttConn({ text: 'Wearable live', mode: 'live' }),
+        onClose: () => setMqttConn({ text: 'Wearable reconnecting…', mode: 'down' }),
+        onError: () => setMqttConn({ text: 'Wearable offline', mode: 'down' }),
+        onMessage: (_topic, payload) => {
+          try {
+            const data = JSON.parse(payload.toString()) as Record<string, unknown>;
+            // The wearable firmware publishes a flat payload:
+            //   {"heart_rate":xx,"spo2":yy,"temperature":tt,"fall_detected":bool,"accel_magnitude":zz}
+            // The backend relay publishes the same values nested under "data".
+            // `pick` handles both shapes.
+            const rawHr = Number(pick(data, 'heart_rate') ?? 0);
+            const rawSpo2 = Number(pick(data, 'spo2') ?? 0);
+            const rawTemp = Number(pick(data, 'body_temp') ?? pick(data, 'temperature') ?? 0);
+            if (!rawHr && !rawSpo2 && !rawTemp) return;
 
-    client.on('message', (_topic, message) => {
-      try {
-        const payload = JSON.parse(message.toString()) as Record<string, unknown>;
-        setPackets((c) => c + 1);
+            hasLiveData.current = true;
+            setPackets((count) => count + 1);
 
-        const rawHr = Number(pick(payload, 'heart_rate') ?? 0);
-        const rawSpo2 = Number(pick(payload, 'spo2') ?? 0);
-        const rawTemp = Number(pick(payload, 'temperature') ?? 0);
-        const isFall = Boolean(pick(payload, 'fall_detected'));
-        const accelMag = Number(pick(payload, 'accel_magnitude') ?? 0);
+            const nowStr = new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            });
 
-        if (isFall) onFallRef.current(Number.isFinite(accelMag) && accelMag > 0 ? accelMag : 3.8);
-
-        const nowStr = new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        });
-        runEngine(
-          Number.isFinite(rawHr) ? rawHr : 0,
-          Number.isFinite(rawSpo2) ? rawSpo2 : 0,
-          Number.isFinite(rawTemp) ? rawTemp : 0,
-          rawHr > 0 || rawSpo2 > 0 ? `Live ${nowStr}` : null,
-        );
-      } catch {
-        /* ignore malformed payloads */
-      }
-    });
+            // runEngine owns the vitals state, the chart points and the feed row.
+            runEngineRef.current(
+              Number.isFinite(rawHr) ? rawHr : 0,
+              Number.isFinite(rawSpo2) ? Math.round(rawSpo2) : 0,
+              Number.isFinite(rawTemp) ? rawTemp : 0,
+              rawHr > 0 || rawSpo2 > 0 ? `Live MQTT ${nowStr}` : null,
+            );
+          } catch (e) {
+            console.error('[MQTT-CARDIO] Error parsing message:', e);
+          }
+        },
+      });
+    } catch (e) {
+      console.error('[MQTT-CARDIO] Failed to initialize:', e);
+    }
 
     return () => {
-      try {
-        client.end(true);
-      } catch {
-        /* noop */
-      }
+      session?.close();
     };
-  }, [runEngine]);
+  }, []);
 
   return {
     hr,

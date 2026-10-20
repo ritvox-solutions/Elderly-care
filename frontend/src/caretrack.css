@@ -7,7 +7,7 @@
   --border-strong: #cbd5d2;
   --text: #1a2b27;
   --text-2: #4b5f5a;
-  --text-3: #7a8f8a;
+  --text-3: #5f746f;
   --accent: #134135;
   --accent-2: #1a5c4c;
   --accent-light: #e6f0ed;
@@ -481,6 +481,10 @@ canvas.spark {
   gap: 12px;
   margin-top: 12px;
 }
+
+.charts-grid.single {
+  grid-template-columns: 1fr;
+}
 .panel, .chart-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -733,6 +737,7 @@ footer.meta {
   white-space: nowrap;
 }
 .ct-btn:hover { background: var(--accent-2); }
+.ct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .ct-btn-ghost {
   appearance: none;
   border: 1px solid var(--border-strong);
@@ -1324,6 +1329,36 @@ footer.meta {
 .status-badge-text.ok { color: #16794a; }
 .status-badge-text.warn { color: #92600a; }
 .status-badge-text.bad { color: #b4232a; }
+
+.patient-add-btn { margin-left: auto; }
+.patient-onboarding {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.patient-onboarding-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.patient-onboarding-head h2 { font-size: 20px; }
+.patient-onboarding-head p { margin-top: 4px; color: var(--text-3); font-size: 13px; }
+.patient-onboarding fieldset { border: 0; padding: 0; margin: 0 0 20px; }
+.patient-onboarding legend { margin-bottom: 10px; font-weight: 700; color: var(--accent); }
+.patient-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.patient-form-grid label { display: grid; gap: 5px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.patient-form-grid .ct-input { max-width: none; }
+.patient-form-wide { grid-column: 1 / -1; }
+.patient-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 680px) {
+  .patient-form-grid { grid-template-columns: 1fr; }
+  .patient-form-wide { grid-column: auto; }
+}
 
 
 /* Direct Role Login Styles */

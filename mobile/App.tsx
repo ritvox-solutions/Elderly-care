@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -15,16 +15,10 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   Heart,
   Activity,
-  Thermometer,
   ShieldCheck,
-  Home,
-  Layers,
   Clock,
   Bell,
   Settings,
-  Radio,
-  CloudSun,
-  Wifi,
   Menu,
   X,
   Check,
@@ -38,24 +32,38 @@ import {
 
 import { theme } from './src/theme';
 import { AuthScreen, type AuthUser, type UserRole } from './src/screens/AuthScreen';
-import { MetricCard } from './src/components/MetricCard';
 import { PatientsScreen } from './src/screens/PatientsScreen';
+import { PatientDashboard } from './src/screens/PatientDashboard';
 import { DEMO_PATIENTS } from './src/data/fixtures';
 import { TelemetryChart } from './src/components/TelemetryChart';
 import { FallAlertModal } from './src/components/FallAlertModal';
-import { DEMO_ALERTS, generateHistoricalData } from './src/data/fixtures';
-import type { AlertItem, TelemetryPoint } from './src/types';
+import { fetchLatest, fetchPatients, subscribeToAlerts } from './src/lib/api';
+import {
+  enableFallPushNotifications,
+  Notifications,
+  readFallNotification,
+  type FallNotificationData,
+} from './src/lib/notifications';
+import type { AlertItem, Patient, TelemetryPoint } from './src/types';
 
 // AuthUser & UserRole are imported from ./src/screens/AuthScreen
 
 export type NavTab =
   | 'patients'
-  | 'room'
-  | 'cardiac'
   | 'dual'
   | 'history'
   | 'alerts'
   | 'settings';
+
+interface FallDisplay {
+  alertId: string;
+  magnitude: number;
+  timestamp: string;
+  patientName: string;
+  roomNumber: string;
+  deviceId: string;
+  message: string;
+}
 
 export default function App() {
   // Current Auth User & Role - starts at null so user sees Login / Signup screen
@@ -65,11 +73,12 @@ export default function App() {
 
   // Active view tab
   const [currentTab, setCurrentTab] = useState<NavTab>('patients');
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [patientsLoading, setPatientsLoading] = useState(false);
+  const [patientsError, setPatientsError] = useState<string | null>(null);
+  const [patientsReload, setPatientsReload] = useState(0);
   const [selectedPatient, setSelectedPatient] = useState(DEMO_PATIENTS[0]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [roomDevice, setRoomDevice] = useState('room-unit-01');
-  const [clockStr, setClockStr] = useState('17:46:52');
-  const [packetsCount, setPacketsCount] = useState(8);
 
   // Role permissions (safe navigation if currentUser is null)
   const isCaregiver = currentUser?.role === 'CAREGIVER';
@@ -84,20 +93,21 @@ export default function App() {
   const [savedToast, setSavedToast] = useState(false);
 
   // Real-time telemetry data
-  const [heartRate, setHeartRate] = useState(57);
-  const [spo2, setSpo2] = useState(97);
-  const [sensorTemp, setSensorTemp] = useState(32.7);
-  const [roomTemp, setRoomTemp] = useState(23.5);
-  const [humidity, setHumidity] = useState(48.0);
-  const [motionDetected, setMotionDetected] = useState(false);
+  const [heartRate, setHeartRate] = useState<number | null>(null);
+  const [spo2, setSpo2] = useState<number | null>(null);
+  const [sensorTemp, setSensorTemp] = useState<number | null>(null);
+  const [roomTemp, setRoomTemp] = useState<number | null>(null);
+  const [humidity, setHumidity] = useState<number | null>(null);
+  const [motionDetected, setMotionDetected] = useState<boolean | null>(null);
+  const [roomTelemetryAt, setRoomTelemetryAt] = useState<string | null>(null);
+  const [wearableTelemetryAt, setWearableTelemetryAt] = useState<string | null>(null);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
 
   // Telemetry stream history
-  const [historyData, setHistoryData] = useState<TelemetryPoint[]>(() =>
-    generateHistoricalData(16)
-  );
+  const [historyData, setHistoryData] = useState<TelemetryPoint[]>([]);
 
   // Alerts state
-  const [alerts, setAlerts] = useState<AlertItem[]>(DEMO_ALERTS);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
 
   // Fall Alert Modal state
   const [fallAlert, setFallAlert] = useState<{
@@ -106,30 +116,186 @@ export default function App() {
     heightM: number;
     category: string;
     timestamp: string;
+    patientName: string;
+    roomNumber: string;
   }>({
     visible: false,
     magnitude: 3.85,
     heightM: 0.88,
     category: 'Bed/Chair Height Fall',
     timestamp: new Date().toISOString(),
+    patientName: 'Patient',
+    roomNumber: 'Unknown room',
   });
 
-  // Clock tick & gentle biometrics variation
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = new Date();
-      setClockStr(now.toLocaleTimeString());
-      setPacketsCount((prev) => prev + 1);
-
-      if (Math.random() > 0.6) {
-        setHeartRate((prev) =>
-          Math.min(95, Math.max(54, prev + (Math.random() > 0.5 ? 1 : -1)))
-        );
-      }
-    }, 2000);
-
-    return () => clearInterval(timer);
+  const showFallAlert = useCallback((fall: FallDisplay) => {
+    setFallAlert({
+      visible: true,
+      magnitude: fall.magnitude,
+      heightM: 0.88,
+      category: 'Critical fall event',
+      timestamp: fall.timestamp,
+      patientName: fall.patientName,
+      roomNumber: fall.roomNumber,
+    });
+    setAlerts((previous) => previous.some((alert) => alert.id === fall.alertId) ? previous : [
+      {
+        id: fall.alertId,
+        type: 'FALL',
+        severity: 'CRITICAL',
+        title: 'Fall detected',
+        message: fall.message,
+        timestamp: fall.timestamp,
+        deviceId: fall.deviceId,
+        patientName: fall.patientName,
+        status: 'ACTIVE',
+      },
+      ...previous,
+    ]);
   }, []);
+
+  useEffect(() => {
+    const displayNotification = (data: FallNotificationData | null) => {
+      if (!data) return;
+      showFallAlert({
+        alertId: data.alert_id,
+        magnitude: data.magnitude,
+        timestamp: data.timestamp,
+        patientName: data.patient_name,
+        roomNumber: data.room_number,
+        deviceId: data.device_id,
+        message: `Fall detected on ${data.device_id}. Immediate assistance may be required.`,
+      });
+    };
+    const received = Notifications.addNotificationReceivedListener((notification) => {
+      displayNotification(readFallNotification(notification));
+    });
+    const opened = Notifications.addNotificationResponseReceivedListener((response) => {
+      displayNotification(readFallNotification(response.notification));
+    });
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) {
+        displayNotification(readFallNotification(response.notification));
+        Notifications.clearLastNotificationResponseAsync();
+      }
+    });
+    return () => {
+      received.remove();
+      opened.remove();
+    };
+  }, [showFallAlert]);
+
+  useEffect(() => {
+    if (!currentUser?.token) return;
+    enableFallPushNotifications(currentUser.token).catch((error) => {
+      console.warn('Fall push registration failed:', error);
+    });
+  }, [currentUser?.token]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    return subscribeToAlerts([selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId], (alert) => {
+      if (alert.category !== 'FALL') return;
+      showFallAlert({
+        alertId: alert.alert_id,
+        magnitude: Number(alert.value || 0),
+        timestamp: alert.timestamp,
+        patientName: alert.patient_name || `${selectedPatient.firstName} ${selectedPatient.lastName}`,
+        roomNumber: alert.room_number || selectedPatient.roomNumber,
+        deviceId: alert.device_id,
+        message: alert.message,
+      });
+    });
+  }, [currentUser, selectedPatient, showFallAlert]);
+
+  useEffect(() => {
+    if (currentUser?.role !== 'CAREGIVER') return;
+    let active = true;
+    setPatientsLoading(true);
+    setPatientsError(null);
+
+    fetchPatients(currentUser.token)
+      .then((rows) => {
+        if (!active) return;
+        setPatients(rows);
+        const next = rows.find((row) => row.id === selectedPatient.id) ?? rows[0];
+        if (next) {
+          setSelectedPatient(next);
+        }
+      })
+      .catch(() => {
+        if (active) setPatientsError('Unable to load patients. Tap to retry.');
+      })
+      .finally(() => {
+        if (active) setPatientsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser, patientsReload]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let active = true;
+
+    const loadTelemetry = async () => {
+      try {
+        const data = await fetchLatest(selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId);
+        if (!active) return;
+
+        const hr = data.heart_rate?.value ?? null;
+        const oxygen = data.spo2?.value ?? null;
+        const bodyTemp = data.cardio_temp?.value ?? null;
+        const ambientTemp = data.temperature?.value ?? null;
+        const roomHumidity = data.humidity?.value ?? null;
+        const motion = data.motion_detected?.value;
+        const wearableTimestamps = [
+          data.heart_rate?.timestamp,
+          data.spo2?.timestamp,
+          data.cardio_temp?.timestamp,
+        ].filter((value): value is string => Boolean(value));
+        const latestWearableTimestamp = wearableTimestamps.sort().at(-1) ?? null;
+        const latestTimestamp = latestWearableTimestamp ?? data.last_seen;
+
+        setHeartRate(hr);
+        setSpo2(oxygen);
+        setSensorTemp(bodyTemp);
+        setRoomTemp(ambientTemp);
+        setHumidity(roomHumidity);
+        setMotionDetected(motion == null ? null : motion > 0);
+        setRoomTelemetryAt(data.last_seen);
+        setWearableTelemetryAt(latestWearableTimestamp);
+        setTelemetryError(null);
+
+        if (latestTimestamp && hr != null && oxygen != null) {
+          const t = new Date(latestTimestamp).getTime();
+          setHistoryData((previous) => {
+            if (previous.at(-1)?.t === t) return previous;
+            return [...previous, {
+              t,
+              timeStr: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              heartRate: hr ?? undefined,
+              spo2: oxygen ?? undefined,
+              roomTemp: ambientTemp ?? undefined,
+              humidity: roomHumidity ?? undefined,
+              bodyTemp: bodyTemp ?? undefined,
+              motion: motion ?? undefined,
+            }].slice(-24);
+          });
+        }
+      } catch {
+        if (active) setTelemetryError('Unable to load current readings. Please try again shortly.');
+      }
+    };
+
+    loadTelemetry();
+    const refresh = setInterval(loadTelemetry, 15000);
+    return () => {
+      active = false;
+      clearInterval(refresh);
+    };
+  }, [currentUser, selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId]);
 
   const handleAcknowledgeAlert = (id: string) => {
     setAlerts((prev) =>
@@ -149,9 +315,7 @@ export default function App() {
   const switchRole = (newRole: UserRole) => {
     setCurrentUser((u) => (u ? { ...u, role: newRole } : u));
     setIsAuthModalOpen(false);
-    if (newRole === 'PATIENT' && (currentTab === 'room' || currentTab === 'dual')) {
-      setCurrentTab('cardiac');
-    }
+    if (newRole === 'PATIENT') setCurrentTab('dual');
   };
 
   const handleSaveThresholds = () => {
@@ -163,12 +327,8 @@ export default function App() {
     switch (tab) {
       case 'patients':
         return 'Assigned Patients';
-      case 'room':
-        return 'Room Unit';
-      case 'cardiac':
-        return isCaregiver ? 'Cardiac & Fall' : 'My Wearable Vitals';
       case 'dual':
-        return 'Dual Overview';
+        return 'Patient Dashboard';
       case 'history':
         return isCaregiver ? 'History & Trends' : 'My Health Analytics';
       case 'alerts':
@@ -177,6 +337,13 @@ export default function App() {
         return isCaregiver ? 'Thresholds & Settings' : 'My Profile & Settings';
     }
   };
+
+  const connectionLabel = telemetryError
+    ? 'Offline'
+    : roomTelemetryAt || wearableTelemetryAt
+      ? 'Up to date'
+      : 'Syncing';
+  const isTelemetrySyncing = !telemetryError && !roomTelemetryAt && !wearableTelemetryAt;
 
   if (!currentUser) {
     return (
@@ -189,7 +356,7 @@ export default function App() {
               setLastUser(user);
               setCurrentUser(user);
               if (user.role === 'PATIENT') {
-                setCurrentTab('cardiac');
+                setCurrentTab('dual');
               } else {
                 setCurrentTab('patients');
               }
@@ -263,15 +430,13 @@ export default function App() {
           <View style={styles.connectionBar}>
             <View style={styles.patientUnitBadge}>
               <Text style={styles.patientUnitText}>
-                {isCaregiver
-                  ? `Monitoring: ${roomDevice}`
-                  : `Assigned: ${roomDevice} • Wearable Active`}
+                {selectedPatient.firstName} {selectedPatient.lastName} • {selectedPatient.roomNumber}
               </Text>
             </View>
 
-            <View style={styles.statusPillOk}>
-              <View style={styles.statusDotOk} />
-              <Text style={styles.statusTextOk}>Online</Text>
+            <View style={[styles.statusPillOk, isTelemetrySyncing && styles.statusPillNeutral, telemetryError && styles.statusPillBad]}>
+              <View style={[styles.statusDotOk, isTelemetrySyncing && styles.statusDotNeutral, telemetryError && styles.statusDotBad]} />
+              <Text style={[styles.statusTextOk, isTelemetrySyncing && styles.statusTextNeutral, telemetryError && styles.statusTextBad]}>{connectionLabel}</Text>
             </View>
           </View>
         </View>
@@ -326,7 +491,7 @@ export default function App() {
                         </View>
                       </View>
                       <Text style={styles.roleUserName}>
-                        {currentUser.fullName} • {roomDevice}
+                        {currentUser.fullName}
                       </Text>
                       <Text style={styles.roleDesc}>
                         Wearable cardiac vitals, SpO2 & health trends
@@ -471,7 +636,7 @@ export default function App() {
                           Patients Directory
                         </Text>
                         <Text style={styles.menuItemDesc}>
-                          View all {DEMO_PATIENTS.length} assigned patients
+                          View all {patients.length} assigned patients
                         </Text>
                       </View>
                     </View>
@@ -481,126 +646,23 @@ export default function App() {
                   </TouchableOpacity>
                 )}
 
-                {/* Cardiac View (Accessible by Both) */}
                 <TouchableOpacity
-                  style={[
-                    styles.menuItem,
-                    currentTab === 'cardiac' && styles.menuItemActive,
-                  ]}
-                  onPress={() => selectTab('cardiac')}
+                  style={[styles.menuItem, currentTab === 'dual' && styles.menuItemActive]}
+                  onPress={() => selectTab('dual')}
                 >
                   <View style={styles.menuItemLeft}>
-                    <View
-                      style={[
-                        styles.menuIconBox,
-                        currentTab === 'cardiac' && styles.menuIconBoxActive,
-                      ]}
-                    >
-                      <Heart
-                        size={16}
-                        color={currentTab === 'cardiac' ? theme.accent : theme.text2}
-                      />
+                    <View style={[styles.menuIconBox, currentTab === 'dual' && styles.menuIconBoxActive]}>
+                      <Activity size={16} color={currentTab === 'dual' ? theme.accent : theme.text2} />
                     </View>
                     <View>
-                      <Text
-                        style={[
-                          styles.menuItemText,
-                          currentTab === 'cardiac' && styles.menuItemTextActive,
-                        ]}
-                      >
-                        {isCaregiver ? 'Cardiac & Fall' : 'My Wearable Vitals'}
+                      <Text style={[styles.menuItemText, currentTab === 'dual' && styles.menuItemTextActive]}>
+                        Patient Dashboard
                       </Text>
-                      <Text style={styles.menuItemDesc}>
-                        Wearable ECG, SpO2 & pulse
-                      </Text>
+                      <Text style={styles.menuItemDesc}>Room and wearable readings</Text>
                     </View>
                   </View>
-                  {currentTab === 'cardiac' && (
-                    <Check size={16} color={theme.accent} />
-                  )}
+                  {currentTab === 'dual' && <Check size={16} color={theme.accent} />}
                 </TouchableOpacity>
-
-                {/* Room Unit (Care Taker Only) */}
-                {isCaregiver ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.menuItem,
-                      currentTab === 'room' && styles.menuItemActive,
-                    ]}
-                    onPress={() => selectTab('room')}
-                  >
-                    <View style={styles.menuItemLeft}>
-                      <View
-                        style={[
-                          styles.menuIconBox,
-                          currentTab === 'room' && styles.menuIconBoxActive,
-                        ]}
-                      >
-                        <Home
-                          size={16}
-                          color={currentTab === 'room' ? theme.accent : theme.text2}
-                        />
-                      </View>
-                      <View>
-                        <Text
-                          style={[
-                            styles.menuItemText,
-                            currentTab === 'room' && styles.menuItemTextActive,
-                          ]}
-                        >
-                          Room Unit
-                        </Text>
-                        <Text style={styles.menuItemDesc}>
-                          Temperature, humidity & PIR motion
-                        </Text>
-                      </View>
-                    </View>
-                    {currentTab === 'room' && (
-                      <Check size={16} color={theme.accent} />
-                    )}
-                  </TouchableOpacity>
-                ) : null}
-
-                {/* Dual Overview (Care Taker Only) */}
-                {isCaregiver ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.menuItem,
-                      currentTab === 'dual' && styles.menuItemActive,
-                    ]}
-                    onPress={() => selectTab('dual')}
-                  >
-                    <View style={styles.menuItemLeft}>
-                      <View
-                        style={[
-                          styles.menuIconBox,
-                          currentTab === 'dual' && styles.menuIconBoxActive,
-                        ]}
-                      >
-                        <Layers
-                          size={16}
-                          color={currentTab === 'dual' ? theme.accent : theme.text2}
-                        />
-                      </View>
-                      <View>
-                        <Text
-                          style={[
-                            styles.menuItemText,
-                            currentTab === 'dual' && styles.menuItemTextActive,
-                          ]}
-                        >
-                          Dual Overview
-                        </Text>
-                        <Text style={styles.menuItemDesc}>
-                          Combined telemetry & presence
-                        </Text>
-                      </View>
-                    </View>
-                    {currentTab === 'dual' && (
-                      <Check size={16} color={theme.accent} />
-                    )}
-                  </TouchableOpacity>
-                ) : null}
 
                 <Text style={[styles.menuSectionHeader, { marginTop: 14 }]}>
                   ANALYTICS & SETTINGS
@@ -636,7 +698,7 @@ export default function App() {
                         {isCaregiver ? 'History & Trends' : 'My Health Analytics'}
                       </Text>
                       <Text style={styles.menuItemDesc}>
-                        24-hour telemetry audit log
+                        Recent vital-sign trends
                       </Text>
                     </View>
                   </View>
@@ -766,216 +828,45 @@ export default function App() {
           {/* VIEW: PATIENTS DIRECTORY (CARE TAKER EXCLUSIVE) */}
           {currentTab === 'patients' && (
             <PatientsScreen
+              patients={patients}
+              caregiverName={currentUser.fullName}
+              loading={patientsLoading}
+              error={patientsError}
+              onRetry={() => setPatientsReload((value) => value + 1)}
               selectedPatientId={selectedPatient.id}
               onSelectPatient={(p) => {
                 setSelectedPatient(p);
-                setRoomDevice(p.roomDeviceId);
+                setHeartRate(null);
+                setSpo2(null);
+                setSensorTemp(null);
+                setRoomTemp(null);
+                setHumidity(null);
+                setMotionDetected(null);
+                setRoomTelemetryAt(null);
+                setWearableTelemetryAt(null);
+                setTelemetryError(null);
+                setHistoryData([]);
                 setCurrentTab('dual');
               }}
             />
           )}
 
-          {/* VIEW: CARDIAC & FALL (EXACT SCREENSHOT LAYOUT) */}
-          {currentTab === 'cardiac' && (
-            <View>
-              <View style={styles.pageHead}>
-                <View>
-                  <Text style={styles.pageTitle}>
-                    {isCaregiver ? 'Cardiac Telemetry Overview' : 'My Wearable Telemetry'}
-                  </Text>
-                  <Text style={styles.pageDesc}>
-                    Real-time wearable ECG & PPG vitals
-                  </Text>
-                </View>
-
-                <View style={styles.pageMeta}>
-                  <Text style={styles.clockHeadText}>{clockStr}</Text>
-                  <View style={styles.packetBadge}>
-                    <Text style={styles.packetBadgeText}>
-                      Live Stream
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* 4 KPI Cards in Mobile 2x2 Grid */}
-              <View style={styles.kpiGrid}>
-                <MetricCard
-                  label="Heart Rate"
-                  value={heartRate}
-                  unit="bpm"
-                  statusText="Resting rhythm"
-                  statusVariant="ok"
-                  icon={Heart}
-                />
-
-                <MetricCard
-                  label="Oxygen (SpO2)"
-                  value={spo2}
-                  unit="%"
-                  statusText="Optimal"
-                  statusVariant="ok"
-                  icon={Activity}
-                />
-
-                <MetricCard
-                  label="Sensor Temp"
-                  value={sensorTemp.toFixed(1)}
-                  unit="°C"
-                  statusText="Check sensor"
-                  statusVariant="warn"
-                  icon={Thermometer}
-                />
-
-                <MetricCard
-                  label="Patient Status"
-                  value="Normal"
-                  statusText=""
-                  statusVariant="ok"
-                  icon={ShieldCheck}
-                  subText="Last recorded 14:06:32"
-                />
-              </View>
-
-              {/* Telemetry History Line Chart Card */}
-              <View style={styles.cardContainer}>
-                <Text style={styles.cardTitle}>Telemetry History</Text>
-                <TelemetryChart data={historyData} height={160} />
-              </View>
-
-              {/* Cardiac Telemetry Feed Card */}
-              <View style={styles.cardContainer}>
-                <Text style={styles.cardTitle}>Cardiac Telemetry Feed</Text>
-                <View style={styles.feedList}>
-                  {historyData.slice(-6).reverse().map((item, idx) => (
-                    <View key={idx} style={styles.feedRow}>
-                      <Text style={styles.feedTime}>{item.timeStr}:21 AM</Text>
-                      <Text style={styles.feedVitals}>
-                        HR <Text style={styles.boldText}>{item.heartRate || 57} bpm</Text>
-                        {'  '}•{'  '}
-                        SpO2 <Text style={styles.boldText}>{item.spo2 || 97}%</Text>
-                        {'  '}•{'  '}
-                        <Text style={styles.boldText}>32.7 °C</Text>
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-
-            </View>
-          )}
-
-          {/* VIEW: ROOM UNIT (CARE TAKER ONLY) */}
-          {currentTab === 'room' && (
-            <View>
-              <View style={styles.pageHead}>
-                <View>
-                  <Text style={styles.pageTitle}>Room Overview • {roomDevice}</Text>
-                  <Text style={styles.pageDesc}>
-                    Environmental & presence telemetry
-                  </Text>
-                </View>
-                <View style={styles.pageMeta}>
-                  <Text style={styles.clockHeadText}>{clockStr}</Text>
-                  <View style={styles.packetBadge}>
-                    <Text style={styles.packetBadgeText}>Online</Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.kpiGrid}>
-                <MetricCard
-                  label="Temperature"
-                  value={roomTemp.toFixed(1)}
-                  unit="°C"
-                  statusText="Comfortable"
-                  statusVariant="ok"
-                  icon={Thermometer}
-                />
-                <MetricCard
-                  label="Humidity"
-                  value={humidity.toFixed(1)}
-                  unit="%"
-                  statusText="Optimal"
-                  statusVariant="ok"
-                  icon={CloudSun}
-                />
-                <MetricCard
-                  label="Room Motion"
-                  value={motionDetected ? 'DETECTED' : 'CLEAR'}
-                  statusText={motionDetected ? 'Active motion' : 'No motion'}
-                  statusVariant={motionDetected ? 'warn' : 'ok'}
-                  icon={Radio}
-                />
-                <MetricCard
-                  label="NodeMCU Link"
-                  value="Active"
-                  statusText="WiFi -62 dBm"
-                  statusVariant="ok"
-                  icon={Wifi}
-                />
-              </View>
-
-              <View style={styles.cardContainer}>
-                <Text style={styles.cardTitle}>PIR Motion Log</Text>
-                <View style={styles.feedList}>
-                  <View style={styles.feedRow}>
-                    <Text style={styles.feedTime}>{clockStr}</Text>
-                    <Text style={styles.feedVitals}>
-                      PIR sensor D2 (GPIO 4): Normal occupancy detected in {roomDevice}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-          )}
-
-          {/* VIEW: DUAL OVERVIEW (CARE TAKER ONLY) */}
+          {/* Combined room and wearable dashboard */}
           {currentTab === 'dual' && (
-            <View>
-              <View style={styles.pageHead}>
-                <View>
-                  <Text style={styles.pageTitle}>Dual System Command</Text>
-                  <Text style={styles.pageDesc}>
-                    Combined cardiac & room environment telemetry
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.kpiGrid}>
-                <MetricCard
-                  label="Heart Rate"
-                  value={heartRate}
-                  unit="bpm"
-                  statusText="Normal"
-                  statusVariant="ok"
-                  icon={Heart}
-                />
-                <MetricCard
-                  label="SpO2"
-                  value={spo2}
-                  unit="%"
-                  statusText="Normal"
-                  statusVariant="ok"
-                  icon={Activity}
-                />
-                <MetricCard
-                  label="Room Temp"
-                  value={roomTemp.toFixed(1)}
-                  unit="°C"
-                  statusText="Comfortable"
-                  statusVariant="ok"
-                  icon={Thermometer}
-                />
-                <MetricCard
-                  label="Motion"
-                  value={motionDetected ? 'ACTIVE' : 'CLEAR'}
-                  statusText="PIR D2"
-                  statusVariant="ok"
-                  icon={Radio}
-                />
-              </View>
-            </View>
+            <PatientDashboard
+              patient={selectedPatient}
+              heartRate={heartRate}
+              spo2={spo2}
+              sensorTemp={sensorTemp}
+              roomTemp={roomTemp}
+              humidity={humidity}
+              motionDetected={motionDetected}
+              history={historyData}
+              roomUpdatedAt={roomTelemetryAt}
+              wearableUpdatedAt={wearableTelemetryAt}
+              error={telemetryError}
+              onBack={() => setCurrentTab('patients')}
+            />
           )}
 
           {/* VIEW: HISTORY */}
@@ -986,27 +877,13 @@ export default function App() {
                   {isCaregiver ? 'Historical Telemetry' : 'My Health Analytics'}
                 </Text>
                 <Text style={styles.pageDesc}>
-                  24-Hour continuous patient biometric record
+                  Recent heart rate and oxygen trends
                 </Text>
               </View>
 
               <View style={styles.cardContainer}>
-                <Text style={styles.cardTitle}>24-Hour Heart Rate & SpO2</Text>
+                <Text style={styles.cardTitle}>Heart Rate & SpO2</Text>
                 <TelemetryChart data={historyData} height={180} />
-              </View>
-
-              <View style={styles.cardContainer}>
-                <Text style={styles.cardTitle}>Audit Log (Recent Readings)</Text>
-                <View style={styles.feedList}>
-                  {historyData.slice(-8).reverse().map((item, idx) => (
-                    <View key={idx} style={styles.feedRow}>
-                      <Text style={styles.feedTime}>{item.timeStr}</Text>
-                      <Text style={styles.feedVitals}>
-                        HR {item.heartRate} bpm • SpO2 {item.spo2}% • {item.roomTemp}°C
-                      </Text>
-                    </View>
-                  ))}
-                </View>
               </View>
             </View>
           )}
@@ -1076,6 +953,11 @@ export default function App() {
                   )}
                 </View>
               ))}
+              {alerts.length === 0 && (
+                <View style={styles.cardContainer}>
+                  <Text style={styles.infoNoticeText}>No active alerts.</Text>
+                </View>
+              )}
             </View>
           )}
 
@@ -1088,7 +970,7 @@ export default function App() {
                 </Text>
                 <Text style={styles.pageDesc}>
                   {isCaregiver
-                    ? 'Special Care Taker access: Set sensor ranges for alert generation'
+                    ? 'Set the ranges used to generate alerts'
                     : 'Personal notification settings and clinical contact profile'}
                 </Text>
               </View>
@@ -1230,8 +1112,8 @@ export default function App() {
           heightM={fallAlert.heightM}
           category={fallAlert.category}
           timestamp={fallAlert.timestamp}
-          patientName={currentUser.fullName}
-          roomNumber={roomDevice}
+          patientName={fallAlert.patientName}
+          roomNumber={fallAlert.roomNumber}
           onSilence={() => setFallAlert((prev) => ({ ...prev, visible: false }))}
           onConfirm={() => setFallAlert((prev) => ({ ...prev, visible: false }))}
         />
@@ -1427,6 +1309,26 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: theme.ok,
+  },
+  statusPillBad: {
+    backgroundColor: theme.badBg,
+    borderColor: theme.badBorder,
+  },
+  statusDotBad: {
+    backgroundColor: theme.bad,
+  },
+  statusTextBad: {
+    color: theme.bad,
+  },
+  statusPillNeutral: {
+    backgroundColor: theme.bg,
+    borderColor: theme.border,
+  },
+  statusDotNeutral: {
+    backgroundColor: theme.text3,
+  },
+  statusTextNeutral: {
+    color: theme.text2,
   },
   modalOverlay: {
     flex: 1,
@@ -1756,28 +1658,6 @@ const styles = StyleSheet.create({
     color: theme.text2,
     marginTop: 2,
   },
-  pageMeta: {
-    alignItems: 'flex-end',
-    gap: 4,
-  },
-  clockHeadText: {
-    fontSize: 11,
-    color: theme.text3,
-    fontFamily: 'monospace',
-  },
-  packetBadge: {
-    backgroundColor: theme.okBg,
-    borderWidth: 1,
-    borderColor: theme.okBorder,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  packetBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: theme.ok,
-  },
   kpiGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1896,29 +1776,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     color: '#ffffff',
-  },
-  feedList: {
-    gap: 8,
-  },
-  feedRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
-  },
-  feedTime: {
-    fontSize: 11,
-    color: theme.text3,
-    fontFamily: 'monospace',
-  },
-  feedVitals: {
-    fontSize: 11,
-    color: theme.text2,
-  },
-  boldText: {
-    fontWeight: '700',
-    color: theme.text,
   },
   alertCard: {
     backgroundColor: theme.surface,

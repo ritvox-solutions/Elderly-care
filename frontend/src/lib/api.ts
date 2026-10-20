@@ -1,23 +1,95 @@
-import type { LatestResponse, Thresholds } from './types';
+import type { LatestResponse, Patient, Thresholds, WsAlertMessage } from './types';
 
-const API_BASE = import.meta.env.VITE_API_URL ?? '';
+export const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || 'https://elderly-care-api.vercel.app'
+).replace(/\/$/, '');
 
-async function get(path: string) {
-  // Prefer same-origin (Vite proxy) then fall back to explicit backend URL.
-  try {
-    const r = await fetch(`${API_BASE}${path}`);
-    if (r.ok) return r.json();
-  } catch {
-    /* fall through */
-  }
-  const fallback = `http://localhost:8000${path}`;
-  const r2 = await fetch(fallback);
-  if (!r2.ok) throw new Error(`GET ${path} failed: ${r2.status}`);
-  return r2.json();
+interface PatientApiResponse {
+  id: string;
+  first_name: string;
+  last_name: string;
+  age: number;
+  gender: string;
+  room_number: string;
+  condition: string;
+  status: Patient['status'];
+  room_device_id: string;
+  wearable_device_id: string;
+  vitals: Patient['vitals'];
+  room_env: Patient['roomEnv'];
 }
 
-export async function fetchLatest(deviceId: string): Promise<LatestResponse> {
-  return get(`/readings/latest?device_id=${encodeURIComponent(deviceId)}`);
+export interface PatientOnboardingInput {
+  first_name: string;
+  last_name: string;
+  date_of_birth: string;
+  gender: string;
+  room_number: string;
+  medical_notes: string;
+  emergency_contact_name: string;
+  emergency_contact_phone: string;
+  emergency_contact_email: string;
+  room_device_id: string;
+  wearable_device_id: string;
+}
+
+function mapPatient(data: PatientApiResponse): Patient {
+  return {
+    id: data.id,
+    firstName: data.first_name,
+    lastName: data.last_name,
+    age: data.age,
+    gender: data.gender,
+    roomNumber: data.room_number,
+    condition: data.condition,
+    status: data.status,
+    roomDeviceId: data.room_device_id,
+    wearableDeviceId: data.wearable_device_id,
+    vitals: data.vitals,
+    roomEnv: data.room_env,
+  };
+}
+
+async function get(path: string) {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) throw new Error(`GET ${path} failed: ${response.status}`);
+  return response.json();
+}
+
+export async function fetchLatest(deviceId: string, wearableDeviceId?: string): Promise<LatestResponse> {
+  const wearable = wearableDeviceId
+    ? `&wearable_device_id=${encodeURIComponent(wearableDeviceId)}`
+    : '';
+  return get(`/readings/latest?device_id=${encodeURIComponent(deviceId)}${wearable}`);
+}
+
+export function fetchLatestAlerts(
+  deviceIds: string[],
+  since: string,
+): Promise<WsAlertMessage[]> {
+  const query = new URLSearchParams({ device_ids: deviceIds.join(','), since });
+  return get(`/api/v1/alerts/latest?${query}`);
+}
+
+export async function fetchPatients(): Promise<Patient[]> {
+  const data = (await get('/api/v1/patients')) as PatientApiResponse[];
+  return data.map(mapPatient);
+}
+
+export async function createPatient(input: PatientOnboardingInput, token: string): Promise<Patient> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/patients`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    const detail = Array.isArray(error.detail)
+      ? error.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join(', ')
+      : error.detail;
+    throw new Error(detail || `Patient onboarding failed (${response.status})`);
+  }
+  return mapPatient((await response.json()) as PatientApiResponse);
 }
 
 export async function fetchPatientThresholds(patientId: string): Promise<Thresholds> {
@@ -54,19 +126,11 @@ export async function savePatientThresholds(
   };
 
   const endpoint = `/api/v1/thresholds?patient_id=${encodeURIComponent(patientId)}`;
-  let r = await fetch(`${API_BASE}${endpoint}`, {
+  const r = await fetch(`${API_BASE_URL}${endpoint}`, {
     method: 'PUT',
     headers,
     body: JSON.stringify(payload),
-  }).catch(() => null);
-
-  if (!r || !r.ok) {
-    r = await fetch(`http://localhost:8000${endpoint}`, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify(payload),
-    });
-  }
+  });
 
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
@@ -97,7 +161,5 @@ export async function savePatientThresholds(
 export function wsUrl(): string {
   const explicit = import.meta.env.VITE_WS_URL as string | undefined;
   if (explicit) return explicit;
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = window.location.host;
-  return `${proto}://${host}/ws/live`;
+  return `${API_BASE_URL.replace(/^http/, 'ws')}/ws/live`;
 }

@@ -36,6 +36,8 @@ export const FallAlertModal: React.FC<FallAlertModalProps> = ({
       transparent
       animationType="slide"
       statusBarTranslucent
+      accessibilityViewIsModal
+      onRequestClose={onSilence}
     >
       <View style={styles.overlay}>
         <View style={styles.card}>

@@ -20,18 +20,23 @@ export default function CardioView({
   clock: string;
   fall: FallState | null;
 }) {
-  const riskText = fall ? 'CRITICAL: FALL!' : cardio.risk;
-  const riskStyle = fall ? { color: '#b4232a' } : { color: cardio.riskColor };
+  const hasVitals = cardio.hr > 0 && cardio.spo2 > 0;
+  const riskText = fall ? 'CRITICAL: FALL!' : hasVitals ? cardio.risk : 'Waiting';
+  const riskStyle = fall
+    ? { color: '#b4232a' }
+    : hasVitals
+      ? { color: cardio.riskColor }
+      : { color: 'var(--text-3)' };
 
   return (
     <div className="view-section active">
       <div className="page-head">
-        <h1>Cardiac Telemetry Overview</h1>
-        <span className="page-desc">Real-time wearable ECG &amp; PPG vitals</span>
+        <h1>Wearable Vitals</h1>
+        <span className="page-desc">Heart rate, oxygen and body temperature</span>
         <div className="meta">
           <span>{clock}</span>
           <span className="badge badge-normal">
-            Live Stream
+            Online
           </span>
         </div>
       </div>
@@ -57,7 +62,9 @@ export default function CardioView({
             <span className="kpi-unit">bpm</span>
           </div>
           <div className="kpi-foot">
-            <span className={`badge ${cardio.bpmBadge.cls}`}>{cardio.bpmBadge.text}</span>
+            <span className={`badge ${cardio.hr > 0 ? cardio.bpmBadge.cls : 'idle'}`}>
+              {cardio.hr > 0 ? cardio.bpmBadge.text : 'Waiting'}
+            </span>
           </div>
         </div>
 
@@ -75,13 +82,15 @@ export default function CardioView({
             <span className="kpi-unit">%</span>
           </div>
           <div className="kpi-foot">
-            <span className={`badge ${cardio.spo2Badge.cls}`}>{cardio.spo2Badge.text}</span>
+            <span className={`badge ${cardio.spo2 > 0 ? cardio.spo2Badge.cls : 'idle'}`}>
+              {cardio.spo2 > 0 ? cardio.spo2Badge.text : 'Waiting'}
+            </span>
           </div>
         </div>
 
         <div className="kpi card-temp">
           <div className="kpi-label">
-            <span>Sensor Temp</span>
+            <span>Wearable Temperature</span>
             <div className="kpi-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="#134135" strokeWidth="2">
                 <path d="M14 14.5V5a2 2 0 1 0-4 0v9.5a4 4 0 1 0 4 0Z" />
@@ -89,7 +98,7 @@ export default function CardioView({
             </div>
           </div>
           <div className="kpi-value-row">
-            <span className="kpi-value">{cardio.temp.toFixed(1)}</span>
+            <span className="kpi-value">{cardio.temp > 0 ? cardio.temp.toFixed(1) : '--'}</span>
             <span className="kpi-unit">°C</span>
           </div>
           <div className="kpi-foot">
@@ -118,34 +127,13 @@ export default function CardioView({
         </div>
       </section>
 
-      <section className="charts-grid">
+      <section className="charts-grid single">
         <div className="chart-card">
           <div className="card-header">
             <span className="card-label">Telemetry History</span>
           </div>
           <div className="chart-container">
             <CardioChart points={cardio.points} />
-          </div>
-        </div>
-
-        <div className="chart-card">
-          <div className="card-header">
-            <span className="card-label">Cardiac Telemetry Feed</span>
-          </div>
-          <div className="log-feed">
-            {cardio.feed.length === 0 ? (
-              <div className="log-empty">Connecting to HiveMQ Cloud TLS…</div>
-            ) : (
-              cardio.feed.map((row, i) => (
-                <div key={`${row.time}-${i}`} className={`log-item${i === 0 ? ' fresh' : ''}`}>
-                  <span className="log-time">{row.time}</span>
-                  <span className="log-data">
-                    HR <strong>{row.hr}</strong> bpm · SpO2 <strong>{row.spo2}%</strong> ·{' '}
-                    {row.temp.toFixed(1)} °C
-                  </span>
-                </div>
-              ))
-            )}
           </div>
         </div>
       </section>

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useApp } from '../lib/store';
-import type { FallState } from '../views/CardioView';
+import type { WsAlertMessage } from '../lib/types';
 
 interface AlertItem {
   id: string;
@@ -8,6 +7,7 @@ interface AlertItem {
   severity: 'WATCH' | 'CRITICAL';
   message: string;
   timestamp: string;
+  deviceId?: string;
   status: 'active' | 'acknowledged' | 'resolved';
   acknowledgedBy?: string;
 }
@@ -22,17 +22,10 @@ function loadAlerts(): AlertItem[] {
 }
 
 export default function Alerts({
-  fall,
-  hr,
-  spo2,
-  deviceId,
+  backendAlert,
 }: {
-  fall: FallState | null;
-  hr: number;
-  spo2: number;
-  deviceId: string;
+  backendAlert: WsAlertMessage | null;
 }) {
-  const { thresholds } = useApp();
   const [alerts, setAlerts] = useState<AlertItem[]>(loadAlerts);
   const [filter, setFilter] = useState<'active' | 'all'>('active');
   const [responder, setResponder] = useState('Caregiver');
@@ -45,76 +38,26 @@ export default function Alerts({
     }
   }, [alerts]);
 
-  // Fall → CRITICAL alert (same trigger as the banner)
   useEffect(() => {
-    if (!fall) return;
-    setAlerts((prev) => {
-      if (prev.some((a) => a.id === `fall-${fall.at}`)) return prev;
+    if (!backendAlert) return;
+    setAlerts((previous) => {
+      if (previous.some((alert) => alert.id === backendAlert.alert_id)) return previous;
       return [
         {
-          id: `fall-${fall.at}`,
-          type: 'Fall Detected',
-          severity: 'CRITICAL' as const,
-          message: `High-G impact fall (${fall.magnitude.toFixed(2)}g) on ${deviceId}. Immediate caregiver response dispatched!`,
-          timestamp: fall.at,
+          id: backendAlert.alert_id,
+          type: backendAlert.metric === 'ampv_verified'
+            ? 'AMPV Verified Emergency'
+            : backendAlert.metric.replaceAll('_', ' '),
+          severity: backendAlert.severity === 'CRITICAL' ? 'CRITICAL' as const : 'WATCH' as const,
+          message: backendAlert.message,
+          timestamp: backendAlert.timestamp,
+          deviceId: backendAlert.device_id,
           status: 'active' as const,
         },
-        ...prev,
+        ...previous,
       ].slice(0, 100);
     });
-  }, [fall, deviceId]);
-
-  // Threshold engine — CRITICAL on fixed clinical floors, WATCH on caregiver thresholds
-  useEffect(() => {
-    const now = new Date().toISOString();
-    setAlerts((prev) => {
-      const next = [...prev];
-      const has = (t: string) => next.some((a) => a.type === t && a.status === 'active');
-      if (hr > 0 && (hr < 40 || hr > 130) && !has('Abnormal Heart Rate')) {
-        next.unshift({
-          id: `hr-${now}`,
-          type: 'Abnormal Heart Rate',
-          severity: 'CRITICAL' as const,
-          message: `Heart rate ${hr} bpm outside survivable bounds on ${deviceId}.`,
-          timestamp: now,
-          status: 'active' as const,
-        });
-      } else if (
-        hr > 0 &&
-        (hr < thresholds.hrMin || hr > thresholds.hrMax) &&
-        !has('Heart Rate Watch')
-      ) {
-        next.unshift({
-          id: `hrw-${now}`,
-          type: 'Heart Rate Watch',
-          severity: 'WATCH' as const,
-          message: `Heart rate ${hr} bpm outside safe range ${thresholds.hrMin}–${thresholds.hrMax} bpm.`,
-          timestamp: now,
-          status: 'active' as const,
-        });
-      }
-      if (spo2 > 0 && spo2 < 90 && !has('Low SpO2')) {
-        next.unshift({
-          id: `spo2-${now}`,
-          type: 'Low SpO2',
-          severity: 'CRITICAL' as const,
-          message: `SpO2 ${spo2}% below critical floor (90%) on ${deviceId}.`,
-          timestamp: now,
-          status: 'active' as const,
-        });
-      } else if (spo2 > 0 && spo2 < thresholds.spo2Min && !has('SpO2 Watch')) {
-        next.unshift({
-          id: `spo2w-${now}`,
-          type: 'SpO2 Watch',
-          severity: 'WATCH' as const,
-          message: `SpO2 ${spo2}% below watch threshold (${thresholds.spo2Min}%).`,
-          timestamp: now,
-          status: 'active' as const,
-        });
-      }
-      return next.slice(0, 100);
-    });
-  }, [hr, spo2, thresholds, deviceId]);
+  }, [backendAlert]);
 
   const visible = alerts.filter((a) => (filter === 'all' ? true : a.status !== 'resolved'));
 
@@ -184,10 +127,6 @@ export default function Alerts({
                   <span className="v" style={{ fontFamily: 'inherit', fontSize: 13 }}>
                     {a.message}
                   </span>
-                </div>
-                <div className="kv-row">
-                  <span className="k">Device</span>
-                  <span className="v">{deviceId}</span>
                 </div>
                 {a.acknowledgedBy && (
                   <div className="kv-row">

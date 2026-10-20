@@ -27,13 +27,12 @@ Backend first (in `backend/`):
 
 ```powershell
 uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
-python simulate_sensors.py
 ```
 
-The Vite dev server proxies `/health`, `/readings/*` and `/ws` to
-`http://localhost:8000`. Cardiac vitals are relayed through the FastAPI backend
-over `/ws/live`; the browser no longer connects directly to HiveMQ or carries
-MQTT credentials.
+Copy `.env.example` to `.env` and set the HiveMQ secure WebSocket URL plus a
+subscribe-only browser account. The dashboard loads its last saved readings
+from the backend once, then receives live sensor values directly from MQTT.
+The backend WebSocket remains connected only for verified alerts and warnings.
 
 ## Routes
 
@@ -49,11 +48,11 @@ MQTT credentials.
 ## Data contracts (unchanged)
 
 - `GET /health`, `GET /readings/latest?device_id=` via FastAPI.
-- `WS /ws/live` room bundles `{device_id, sensor, timestamp, data, fall_detected}`
-  and per-metric `{device_id, sensor, timestamp, metric, value, fall_detected}`.
-- MQTT `cardiac/monitor/data` + `caretrack/+/wearable/motion` direct from HiveMQ.
-  The port accepts both flat (`{heart_rate: …}`) and nested (`{data: {heart_rate: …}}`)
-  payloads — the old page only read flat keys, which the simulator doesn't send.
+- MQTT `caretrack/{device_id}/room/environment`,
+  `caretrack/{device_id}/room/motion`, and `cardiac/monitor/data` provide live
+  readings directly to the dashboard.
+- `WS /ws/live` is filtered client-side to verified backend alert frames such as
+  `{type: "alert", metric: "ampv_verified", ...}`.
 
 ## Notes
 

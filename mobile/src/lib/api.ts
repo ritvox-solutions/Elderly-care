@@ -1,0 +1,180 @@
+import type { LatestResponse, Patient } from '../types';
+
+export const API_BASE_URL = (
+  process.env.EXPO_PUBLIC_API_BASE_URL ||
+  'https://elderly-care-api.vercel.app'
+).replace(/\/$/, '');
+
+interface BackendUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: 'PATIENT' | 'CAREGIVER';
+}
+
+interface LoginResponse {
+  access_token: string;
+  user: BackendUser;
+}
+
+interface PatientRow {
+  id: string;
+  first_name: string;
+  last_name: string;
+  age: number;
+  gender: string;
+  room_number: string;
+  condition: string;
+  status: string;
+  room_device_id: string;
+  wearable_device_id: string;
+}
+
+export interface LiveAlert {
+  type: 'alert';
+  alert_id: string;
+  device_id: string;
+  timestamp: string;
+  category: string;
+  severity: string;
+  metric: string;
+  value: number;
+  message: string;
+  patient_name?: string | null;
+  room_number?: string | null;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, init);
+  } catch {
+    throw new Error(`Cannot reach the CareTrack backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Backend request failed (${response.status}).`);
+  }
+
+  return response.json();
+}
+
+export function registerUser(input: {
+  email: string;
+  password: string;
+  full_name: string;
+  role: 'PATIENT' | 'CAREGIVER';
+  phone_number: string | null;
+}) {
+  return request<BackendUser>('/api/v1/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function loginUser(email: string, password: string) {
+  return request<LoginResponse>('/api/v1/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function registerPushToken(token: string, accessToken: string) {
+  return request<{ status: string }>('/api/v1/auth/push-token', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function subscribeToAlerts(deviceIds: string[], onAlert: (alert: LiveAlert) => void) {
+  const url = `${API_BASE_URL.replace(/^http/, 'ws')}/ws/live`;
+  const since = new Date().toISOString();
+  const seen = new Set<string>();
+  let stopped = false;
+  let socket: WebSocket | null = null;
+  let reconnect: ReturnType<typeof setTimeout> | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let polling: ReturnType<typeof setInterval> | null = null;
+
+  const deliver = (alert: LiveAlert) => {
+    if (seen.has(alert.alert_id)) return;
+    if (seen.size > 200) seen.clear();
+    seen.add(alert.alert_id);
+    onAlert(alert);
+  };
+
+  const poll = () => {
+    const query = new URLSearchParams({ device_ids: deviceIds.join(','), since });
+    request<LiveAlert[]>(`/api/v1/alerts/latest?${query}`)
+      .then((alerts) => alerts.reverse().forEach(deliver))
+      .catch(() => {});
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    socket = new WebSocket(url);
+    socket.onopen = () => {
+      heartbeat = setInterval(() => socket?.readyState === WebSocket.OPEN && socket.send('ping'), 20000);
+    };
+    socket.onmessage = ({ data }) => {
+      try {
+        const message = JSON.parse(String(data));
+        if (message.type === 'alert') deliver(message as LiveAlert);
+      } catch {
+        // Ignore malformed or non-JSON telemetry frames.
+      }
+    };
+    socket.onclose = () => {
+      if (heartbeat) clearInterval(heartbeat);
+      if (!stopped) reconnect = setTimeout(connect, 3000);
+    };
+  };
+
+  connect();
+  polling = setInterval(poll, 2000);
+  return () => {
+    stopped = true;
+    if (reconnect) clearTimeout(reconnect);
+    if (heartbeat) clearInterval(heartbeat);
+    if (polling) clearInterval(polling);
+    socket?.close();
+  };
+}
+
+export async function fetchPatients(token?: string): Promise<Patient[]> {
+  const rows = await request<PatientRow[]>('/api/v1/patients', {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    firstName: row.first_name,
+    lastName: row.last_name,
+    age: row.age,
+    gender: row.gender === 'Female' || row.gender === 'Male' ? row.gender : 'Other',
+    roomNumber: row.room_number,
+    condition: row.condition,
+    emergencyContact: { name: '', phone: '', relationship: '' },
+    medicalNotes: row.condition,
+    assignedCaregiver: '',
+    roomDeviceId: row.room_device_id,
+    wearableDeviceId: row.wearable_device_id,
+    status:
+      row.status === 'STABLE' || row.status === 'CRITICAL' ? row.status : 'ATTENTION',
+  }));
+}
+
+export async function fetchLatest(roomDeviceId: string, wearableDeviceId: string): Promise<LatestResponse> {
+  const query = new URLSearchParams({
+    device_id: roomDeviceId,
+    wearable_device_id: wearableDeviceId,
+  });
+  return request<LatestResponse>(`/readings/latest?${query}`);
+}

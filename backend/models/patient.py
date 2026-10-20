@@ -17,6 +17,7 @@ class Patient(Base):
     medical_notes = Column(Text, nullable=True)
     emergency_contact_name = Column(String(150), nullable=False)
     emergency_contact_phone = Column(String(50), nullable=False)
+    emergency_contact_email = Column(String(255), nullable=True)
     created_by_id = Column(GUID, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

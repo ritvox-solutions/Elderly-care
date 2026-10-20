@@ -16,11 +16,12 @@ caregivers' inboxes.
 """
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
 from core import email as email_transport
+from core.ampv import AMPV_WINDOW_SECONDS, evaluate_ampv
 from database import SessionLocal
 from models import (
     Alert,
@@ -33,6 +34,7 @@ from models import (
     Notification,
     NotificationChannel,
     NotificationStatus,
+    Reading,
     User,
     UserRole,
 )
@@ -67,6 +69,7 @@ class Emergency:
 def detect_emergencies(
     event: TelemetryEvent,
     thresholds: dict | None = None,
+    context: dict[str, float | bool] | None = None,
 ) -> list[Emergency]:
     """Evaluate one telemetry event; return every emergency it triggers.
 
@@ -75,8 +78,24 @@ def detect_emergencies(
     CRITICAL when physiologically dangerous.
     """
     th = thresholds if thresholds is not None else ACTIVE_THRESHOLDS
-    data = event.data
+    data = {**(context or {}), **event.data}
     found: list[Emergency] = []
+
+    ampv = evaluate_ampv(data, th)
+    if ampv.alert:
+        label = ", ".join(signal.replace("_", " ") for signal in ampv.signals)
+        return [
+            Emergency(
+                category=AlertCategory.FALL if data.get("fall_detected") else AlertCategory.CARDIAC,
+                severity=AlertSeverity.CRITICAL,
+                metric="ampv_verified",
+                value=1.0,
+                message=(
+                    f"AMPV verified an emergency on device {event.device_id}: {label} "
+                    f"({ampv.rule})."
+                ),
+            )
+        ]
 
     if event.fall_detected:
         accel = float(data.get("accel_magnitude") or 0.0)
@@ -177,6 +196,7 @@ def resolve_recipients(db: Session, device_id: str) -> tuple[list[User], list[st
     """
     settings = get_settings()
     caregivers: list[User] = []
+    family_email: str | None = None
 
     device = db.query(Device).filter(Device.device_identifier == device_id).first()
     if device:
@@ -187,6 +207,7 @@ def resolve_recipients(db: Session, device_id: str) -> tuple[list[User], list[st
             .first()
         )
         if pairing:
+            family_email = pairing.patient.emergency_contact_email if pairing.patient else None
             caregivers = (
                 db.query(User)
                 .join(CaregiverAssignment, CaregiverAssignment.caregiver_id == User.id)
@@ -207,10 +228,13 @@ def resolve_recipients(db: Session, device_id: str) -> tuple[list[User], list[st
             .all()
         )
 
-    extras = [
-        addr for addr in settings.alert_fallback_emails
-        if addr not in {user.email for user in caregivers}
-    ]
+    registered = {user.email.lower() for user in caregivers}
+    extras = []
+    for address in [family_email, *settings.alert_fallback_emails]:
+        if address and address.lower() not in registered and address.lower() not in {
+            item.lower() for item in extras
+        }:
+            extras.append(address)
     return caregivers, extras
 
 
@@ -264,6 +288,46 @@ def _patient_context(db: Session, device_id: str) -> tuple[str | None, str | Non
     return pairing.patient_id, label
 
 
+def _recent_sensor_context(
+    db: Session,
+    patient_id: str | None,
+    event: TelemetryEvent,
+) -> dict[str, float | bool]:
+    """Load the patient's latest AMPV inputs from the correlation window."""
+    if patient_id is None:
+        return {}
+    device_ids = [
+        identifier
+        for (identifier,) in (
+            db.query(Device.device_identifier)
+            .join(DevicePairing, DevicePairing.device_id == Device.id)
+            .filter(DevicePairing.patient_id == patient_id, DevicePairing.is_active.is_(True))
+            .all()
+        )
+    ]
+    if not device_ids:
+        return {}
+
+    # shortcut: fixed paper-aligned correlation window; calibrate per patient after hardware trials.
+    since = event.timestamp - timedelta(seconds=AMPV_WINDOW_SECONDS)
+    rows = (
+        db.query(Reading)
+        .filter(
+            Reading.device_id.in_(device_ids),
+            Reading.metric.in_(["heart_rate", "spo2", "body_temp", "fall_detected", "motion"]),
+            Reading.timestamp >= since,
+            Reading.timestamp <= event.timestamp,
+        )
+        .order_by(Reading.timestamp.desc())
+        .all()
+    )
+    context: dict[str, float | bool] = {}
+    for row in rows:
+        if row.metric not in context:
+            context[row.metric] = bool(row.value) if row.metric in {"fall_detected", "motion"} else row.value
+    return context
+
+
 def process_emergency(event: TelemetryEvent, db: Session | None = None) -> list[Alert]:
     """Full pipeline for one telemetry event; returns the alerts created.
 
@@ -279,7 +343,8 @@ def process_emergency(event: TelemetryEvent, db: Session | None = None) -> list[
 
     patient_id, label = _patient_context(db, event.device_id)
     th = get_patient_threshold_dict(patient_id, db)
-    emergencies = detect_emergencies(event, thresholds=th)
+    context = _recent_sensor_context(db, patient_id, event)
+    emergencies = detect_emergencies(event, thresholds=th, context=context)
     if not emergencies:
         if own_session:
             db.close()
@@ -360,6 +425,10 @@ def process_emergency(event: TelemetryEvent, db: Session | None = None) -> list[
 
         if own_session:
             db.commit()
+            # Keep returned alerts readable after this worker-owned session closes.
+            for alert in created:
+                db.refresh(alert)
+                db.expunge(alert)
     except Exception:
         if own_session:
             db.rollback()

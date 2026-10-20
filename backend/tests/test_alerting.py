@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -9,7 +9,9 @@ from core.alerting import (
     reset_cooldowns,
     resolve_recipients,
 )
+from core.ampv import evaluate_ampv
 from core.security import hash_password
+from main import alert_message
 from models import (
     AlertCategory,
     AlertSeverity,
@@ -23,6 +25,7 @@ from models import (
     NotificationChannel,
     NotificationStatus,
     Patient,
+    Reading,
     User,
     UserRole,
 )
@@ -83,6 +86,7 @@ def scenario(db_session):
         room_number="Room 312",
         emergency_contact_name="Sam Vance",
         emergency_contact_phone="+1-555-0142",
+        emergency_contact_email="sam.vance@example.com",
     )
     device = Device(
         device_identifier="wearable-test-01",
@@ -112,6 +116,35 @@ def test_fall_detection_is_critical_emergency():
 
 def test_normal_vitals_trigger_no_emergency():
     assert detect_emergencies(vitals_event()) == []
+
+
+@pytest.mark.parametrize(
+    ("data", "rule"),
+    [
+        ({"fall_detected": True, "heart_rate": 125, "spo2": 98}, "fall_with_abnormal_vitals"),
+        ({"fall_detected": True, "heart_rate": 78, "spo2": 88}, "fall_with_abnormal_vitals"),
+        ({"heart_rate": 125, "body_temp": 38.5}, "abnormal_heart_rate_with_fever"),
+        ({"fall_detected": True, "motion": False}, "fall_with_no_motion"),
+    ],
+)
+def test_ampv_verifies_multi_sensor_emergencies(data, rule):
+    decision = evaluate_ampv(data, {"hr_min": 50, "hr_max": 110, "spo2_min": 92})
+    assert decision.alert is True
+    assert decision.rule == rule
+
+
+def test_ampv_rejects_single_ambiguous_signal():
+    thresholds = {"hr_min": 50, "hr_max": 110, "spo2_min": 92}
+    assert evaluate_ampv({"heart_rate": 125}, thresholds).alert is False
+    assert evaluate_ampv({"spo2": 88}, thresholds).alert is False
+    assert evaluate_ampv({"fall_detected": True, "motion": True}, thresholds).alert is False
+
+
+def test_detect_emergencies_consolidates_verified_ampv_event():
+    emergencies = detect_emergencies(vitals_event(heart_rate=125, body_temp=38.5))
+    assert len(emergencies) == 1
+    assert emergencies[0].metric == "ampv_verified"
+    assert emergencies[0].severity is AlertSeverity.CRITICAL
 
 
 def test_vital_breaches_use_configured_thresholds():
@@ -177,11 +210,49 @@ def test_process_emergency_persists_alert_and_delivers_email(db_session, scenari
     assert note.delivered_at is not None
     assert note.error_message is None
 
-    assert sent["recipients"] == ["nurse.jane@caretrack.org"]
+    assert sent["recipients"] == ["nurse.jane@caretrack.org", "sam.vance@example.com"]
     assert "CRITICAL" in sent["subject"]
     assert "wearable-test-01" in sent["subject"]
     assert "Eleanor Vance (Room 312)" in sent["body"]
     assert "Fall detected" in sent["body"]
+
+    ws_message = alert_message(fall_event(), alert)
+    assert ws_message["type"] == "alert"
+    assert ws_message["severity"] == "CRITICAL"
+    assert ws_message["metric"] == "fall_detected"
+    assert ws_message["timestamp"].endswith("+00:00")
+
+
+def test_process_emergency_correlates_recent_room_motion(db_session, scenario, monkeypatch):
+    room_device = Device(
+        device_identifier="room-test-01",
+        device_type=DeviceType.ROOM_KIT.value,
+        status=DeviceStatus.ONLINE.value,
+    )
+    db_session.add(room_device)
+    db_session.commit()
+    db_session.add(
+        DevicePairing(device_id=room_device.id, patient_id=scenario["patient"].id, is_active=True)
+    )
+    db_session.add(
+        Reading(
+            device_id=room_device.device_identifier,
+            patient_id=scenario["patient"].id,
+            sensor_type="room",
+            metric="motion",
+            value=0.0,
+            unit="boolean",
+            timestamp=datetime(2026, 10, 14, 9, 59, 45, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(email_transport, "send_smtp_mail", lambda **kwargs: (True, "sent"))
+
+    alerts = process_emergency(fall_event(), db=db_session)
+
+    assert len(alerts) == 1
+    assert alerts[0].triggering_metric == "ampv_verified"
+    assert "fall with no motion" in alerts[0].message.replace("_", " ")
 
 
 def test_smtp_failure_marks_notification_failed(db_session, scenario, monkeypatch):

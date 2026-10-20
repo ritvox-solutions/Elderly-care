@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 from typing import List
 
 import paho.mqtt.client as mqtt
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
-from database import engine, Base, SessionLocal
-from models import Reading
+from database import engine, Base, SessionLocal, get_db
+from models import Alert, Device, DevicePairing, DeviceType, Reading
 from core.alerting import process_emergency
 from routers.auth import router as auth_router
 from routers.thresholds import router as thresholds_router
@@ -97,9 +97,34 @@ def alert_worker(event: TelemetryEvent):
     detect_emergencies() before any database or network work happens.
     """
     try:
-        process_emergency(event)
+        alerts = process_emergency(event)
+        if alerts and main_loop is not None and manager.active:
+            messages = [alert_message(event, alert) for alert in alerts]
+
+            async def fast_broadcast(msgs=messages):
+                for message in msgs:
+                    await manager.broadcast(message)
+
+            asyncio.run_coroutine_threadsafe(fast_broadcast(), main_loop)
     except Exception as e:
         print(f"[ALERT Error] process_emergency: {e}")
+
+
+def alert_message(event: TelemetryEvent, alert: Alert) -> dict:
+    """Convert a persisted backend alert to the browser WebSocket contract."""
+    created_at = alert.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return {
+        "type": "alert",
+        "alert_id": str(alert.id),
+        "device_id": event.device_id,
+        "timestamp": created_at.isoformat(),
+        "category": alert.category,
+        "severity": alert.severity,
+        "metric": alert.triggering_metric,
+        "message": alert.message,
+    }
 
 
 def broadcast_messages(event: TelemetryEvent) -> list[dict]:
@@ -271,116 +296,97 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 @app.get("/readings/latest")
-def latest(device_id: str = Query(...)):
-    with SessionLocal() as s:
-        temp = (
-            s.query(Reading)
-            .filter(
-                Reading.device_id == device_id,
-                Reading.sensor_type == "room",
-                Reading.metric.in_(["room_temp", "temperature"]),
-            )
-            .order_by(Reading.timestamp.desc())
+def latest(
+    device_id: str = Query(...),
+    wearable_device_id: str | None = Query(None),
+    s: Session = Depends(get_db),
+):
+    if not wearable_device_id:
+        room_device = s.query(Device).filter(Device.device_identifier == device_id).first()
+        room_pairing = (
+            s.query(DevicePairing)
+            .filter(DevicePairing.device_id == room_device.id, DevicePairing.is_active.is_(True))
             .first()
+            if room_device
+            else None
         )
-        hum = (
-            s.query(Reading)
-            .filter(
-                Reading.device_id == device_id,
-                Reading.sensor_type == "room",
-                Reading.metric == "humidity",
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
-        )
-        mot = (
-            s.query(Reading)
-            .filter(
-                Reading.device_id == device_id,
-                Reading.sensor_type == "room",
-                Reading.metric.in_(["motion", "motion_detected"]),
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
-        )
-
-        hr = (
-            s.query(Reading)
-            .filter(
-                Reading.metric == "heart_rate",
-                Reading.value > 0,
-                or_(Reading.device_id == device_id, Reading.device_id == "room-unit-01"),
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
-        )
-        if not hr:
-            hr = (
-                s.query(Reading)
+        if room_pairing:
+            wearable_device_id = (
+                s.query(Device.device_identifier)
+                .join(DevicePairing, DevicePairing.device_id == Device.id)
                 .filter(
-                    Reading.metric == "heart_rate",
-                    Reading.value > 0,
+                    DevicePairing.patient_id == room_pairing.patient_id,
+                    DevicePairing.is_active.is_(True),
+                    Device.device_type == DeviceType.WEARABLE.value,
                 )
-                .order_by(Reading.timestamp.desc())
-                .first()
+                .scalar()
             )
 
-        spo2 = (
-            s.query(Reading)
-            .filter(
-                Reading.metric == "spo2",
-                Reading.value > 0,
-                or_(Reading.device_id == device_id, Reading.device_id == "room-unit-01"),
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
+    def wearable_reading(metric: str, *, positive: bool = False):
+        if not wearable_device_id:
+            return None
+        query = s.query(Reading).filter(
+            Reading.device_id == wearable_device_id,
+            Reading.sensor_type == "wearable",
+            Reading.metric == metric,
         )
-        if not spo2:
-            spo2 = (
-                s.query(Reading)
-                .filter(
-                    Reading.metric == "spo2",
-                    Reading.value > 0,
-                )
-                .order_by(Reading.timestamp.desc())
-                .first()
-            )
+        if positive:
+            query = query.filter(Reading.value > 0)
+        return query.order_by(Reading.timestamp.desc()).first()
 
-        cardio_temp = (
-            s.query(Reading)
-            .filter(
-                Reading.metric.in_(["body_temp", "temperature"]),
-                Reading.sensor_type == "wearable",
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
+    temp = (
+        s.query(Reading)
+        .filter(
+            Reading.device_id == device_id,
+            Reading.sensor_type == "room",
+            Reading.metric.in_(["room_temp", "temperature"]),
         )
-
-        last = (
-            s.query(Reading)
-            .filter(
-                Reading.device_id == device_id,
-            )
-            .order_by(Reading.timestamp.desc())
-            .first()
+        .order_by(Reading.timestamp.desc())
+        .first()
+    )
+    hum = (
+        s.query(Reading)
+        .filter(
+            Reading.device_id == device_id,
+            Reading.sensor_type == "room",
+            Reading.metric == "humidity",
         )
+        .order_by(Reading.timestamp.desc())
+        .first()
+    )
+    mot = (
+        s.query(Reading)
+        .filter(
+            Reading.device_id == device_id,
+            Reading.sensor_type == "room",
+            Reading.metric.in_(["motion", "motion_detected"]),
+        )
+        .order_by(Reading.timestamp.desc())
+        .first()
+    )
 
-        def fmt(r):
-            if not r:
-                return None
-            return {"value": r.value, "timestamp": r.timestamp.isoformat()}
+    hr = wearable_reading("heart_rate", positive=True)
+    spo2 = wearable_reading("spo2", positive=True)
+    cardio_temp = wearable_reading("body_temp", positive=True)
+    room_last_seen = max((reading.timestamp for reading in (temp, hum, mot) if reading), default=None)
 
-        return {
-            "device_id": device_id,
-            "temperature": fmt(temp),
-            "humidity": fmt(hum),
-            "motion_detected": fmt(mot),
-            "motion": fmt(mot),
-            "heart_rate": fmt(hr),
-            "spo2": fmt(spo2),
-            "cardio_temp": fmt(cardio_temp),
-            "last_seen": last.timestamp.isoformat() if last else None,
-        }
+    def fmt(reading):
+        if not reading:
+            return None
+        return {"value": reading.value, "timestamp": reading.timestamp.isoformat()}
+
+    return {
+        "device_id": device_id,
+        "wearable_device_id": wearable_device_id,
+        "temperature": fmt(temp),
+        "humidity": fmt(hum),
+        "motion_detected": fmt(mot),
+        "motion": fmt(mot),
+        "heart_rate": fmt(hr),
+        "spo2": fmt(spo2),
+        "cardio_temp": fmt(cardio_temp),
+        "last_seen": room_last_seen.isoformat() if room_last_seen else None,
+    }
 
 @app.post("/api/v1/telemetry/ingest")
 async def ingest_telemetry_http(payload: dict):
@@ -394,6 +400,8 @@ async def ingest_telemetry_http(payload: dict):
         return {"status": "error", "message": "Invalid or unparseable telemetry payload"}
 
     store_event(event)
+    for message in broadcast_messages(event):
+        await manager.broadcast(message)
     # Emergency evaluation (fall / critical vitals -> alert + caregiver email)
     # happens off the event loop so SMTP latency never delays the webhook.
     asyncio.get_running_loop().run_in_executor(None, alert_worker, event)

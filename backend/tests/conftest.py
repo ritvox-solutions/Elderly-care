@@ -1,7 +1,13 @@
+import os
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
+
+# Tests must not inherit a developer's local email enable/disable switch.
+os.environ["EMAIL_ALERTS_ENABLED"] = "true"
+os.environ["VERCEL"] = "1"  # Tests do not need the persistent MQTT client.
 
 from database import Base, get_db
 import models

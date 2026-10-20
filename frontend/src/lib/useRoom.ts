@@ -225,10 +225,12 @@ export function useRoom(deviceId: string, opts: UseRoomOpts) {
 
   useEffect(() => {
     if (!deviceId || !opts.wearableDeviceId) return;
-    const since = new Date().toISOString();
+    // Recover alerts raised shortly before navigation or a dashboard refresh.
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const poll = () => fetchLatestAlerts([deviceId, optsRef.current.wearableDeviceId], since)
       .then((alerts) => alerts.reverse().forEach(deliverAlert))
       .catch(() => {});
+    poll();
     const timer = window.setInterval(poll, 2000);
     return () => window.clearInterval(timer);
   }, [deviceId, opts.wearableDeviceId, deliverAlert]);

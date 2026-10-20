@@ -95,7 +95,8 @@ export function registerPushToken(token: string, accessToken: string) {
 
 export function subscribeToAlerts(deviceIds: string[], onAlert: (alert: LiveAlert) => void) {
   const url = `${API_BASE_URL.replace(/^http/, 'ws')}/ws/live`;
-  const since = new Date().toISOString();
+  // Recover alerts raised shortly before the app opened or resumed.
+  const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const seen = new Set<string>();
   let stopped = false;
   let socket: WebSocket | null = null;
@@ -138,6 +139,7 @@ export function subscribeToAlerts(deviceIds: string[], onAlert: (alert: LiveAler
   };
 
   connect();
+  poll();
   polling = setInterval(poll, 2000);
   return () => {
     stopped = true;

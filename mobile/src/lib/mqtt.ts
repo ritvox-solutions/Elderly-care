@@ -6,6 +6,15 @@ interface MqttSubscription {
   onStatus: (connected: boolean, error?: string) => void;
 }
 
+function websocketBrokerUrl(raw: string) {
+  if (/^wss?:\/\//i.test(raw)) return raw;
+  if (/^mqtts?:\/\//i.test(raw)) {
+    const url = new URL(raw);
+    return `${url.protocol === 'mqtts:' ? 'wss' : 'ws'}://${url.hostname}:${url.port === '1883' ? '8083' : '8884'}/mqtt`;
+  }
+  return `wss://${raw.replace(/^\/+|\/+$/g, '')}:8884/mqtt`;
+}
+
 export function subscribeToTelemetry({ topics, onMessage, onStatus }: MqttSubscription) {
   const brokerUrl = process.env.EXPO_PUBLIC_MQTT_BROKER_URL?.trim();
   if (!brokerUrl) {
@@ -13,7 +22,7 @@ export function subscribeToTelemetry({ topics, onMessage, onStatus }: MqttSubscr
     return () => {};
   }
 
-  const client = mqtt.connect(brokerUrl, {
+  const client = mqtt.connect(websocketBrokerUrl(brokerUrl), {
     clientId: `caretrack_mobile_${Math.random().toString(16).slice(2, 10)}`,
     clean: true,
     reconnectPeriod: 2000,

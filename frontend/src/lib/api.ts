@@ -86,8 +86,12 @@ export function fetchLatestAlerts(
   return get(`/api/v1/alerts/latest?${query}`);
 }
 
-export async function fetchPatients(): Promise<Patient[]> {
-  const data = (await get('/api/v1/patients')) as PatientApiResponse[];
+export async function fetchPatients(token: string): Promise<Patient[]> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/patients`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`Patient directory failed (${response.status})`);
+  const data = (await response.json()) as PatientApiResponse[];
   return data.map(mapPatient);
 }
 

@@ -30,8 +30,8 @@ export default function PatientsPage({
   const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
 
   useEffect(() => {
-    fetchPatients().then(setPatients).catch(() => {});
-  }, []);
+    if (authUser?.token) fetchPatients(authUser.token).then(setPatients).catch(() => {});
+  }, [authUser?.token]);
 
   const filtered = patients.filter((p) => {
     const q = search.toLowerCase();

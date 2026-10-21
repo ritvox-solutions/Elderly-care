@@ -12,6 +12,12 @@ interface PatientApiResponse {
   gender: string;
   room_number: string;
   condition: string;
+  email: string | null;
+  date_of_birth: string;
+  medical_notes: string | null;
+  emergency_contact_name: string;
+  emergency_contact_phone: string;
+  emergency_contact_email: string | null;
   status: Patient['status'];
   room_device_id: string;
   wearable_device_id: string;
@@ -22,6 +28,7 @@ interface PatientApiResponse {
 export interface PatientOnboardingInput {
   first_name: string;
   last_name: string;
+  email: string;
   date_of_birth: string;
   gender: string;
   room_number: string;
@@ -42,6 +49,14 @@ function mapPatient(data: PatientApiResponse): Patient {
     gender: data.gender,
     roomNumber: data.room_number,
     condition: data.condition,
+    email: data.email || undefined,
+    dateOfBirth: data.date_of_birth,
+    medicalNotes: data.medical_notes || undefined,
+    emergencyContact: {
+      name: data.emergency_contact_name,
+      phone: data.emergency_contact_phone,
+      email: data.emergency_contact_email || undefined,
+    },
     status: data.status,
     roomDeviceId: data.room_device_id,
     wearableDeviceId: data.wearable_device_id,
@@ -90,6 +105,29 @@ export async function createPatient(input: PatientOnboardingInput, token: string
     throw new Error(detail || `Patient onboarding failed (${response.status})`);
   }
   return mapPatient((await response.json()) as PatientApiResponse);
+}
+
+export async function updatePatient(
+  patientId: string,
+  input: Omit<PatientOnboardingInput, 'room_device_id' | 'wearable_device_id'>,
+  token: string,
+): Promise<Patient> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/patients/${encodeURIComponent(patientId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Patient update failed (${response.status})`);
+  }
+  return mapPatient((await response.json()) as PatientApiResponse);
+}
+
+export async function demoCaregiverLogin() {
+  const response = await fetch(`${API_BASE_URL}/api/v1/auth/demo-login`, { method: 'POST' });
+  if (!response.ok) throw new Error(`Demo login failed (${response.status})`);
+  return response.json();
 }
 
 export async function fetchPatientThresholds(patientId: string): Promise<Thresholds> {

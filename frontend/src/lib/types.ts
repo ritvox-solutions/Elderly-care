@@ -6,6 +6,10 @@ export interface Patient {
   gender: string;
   roomNumber: string;
   condition: string;
+  email?: string;
+  dateOfBirth?: string;
+  medicalNotes?: string;
+  emergencyContact?: { name: string; phone: string; email?: string };
   status: 'STABLE' | 'ATTENTION' | 'CRITICAL';
   roomDeviceId: string;
   wearableDeviceId: string;

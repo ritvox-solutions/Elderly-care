@@ -37,7 +37,9 @@ import { PatientDashboard } from './src/screens/PatientDashboard';
 import { DEMO_PATIENTS } from './src/data/fixtures';
 import { TelemetryChart } from './src/components/TelemetryChart';
 import { FallAlertModal } from './src/components/FallAlertModal';
-import { fetchLatest, fetchPatients, subscribeToAlerts } from './src/lib/api';
+import { PatientEditModal } from './src/components/PatientEditModal';
+import { fetchPatients, subscribeToAlerts, updatePatient } from './src/lib/api';
+import { subscribeToTelemetry } from './src/lib/mqtt';
 import {
   enableFallPushNotifications,
   Notifications,
@@ -79,6 +81,8 @@ export default function App() {
   const [patientsReload, setPatientsReload] = useState(0);
   const [selectedPatient, setSelectedPatient] = useState(DEMO_PATIENTS[0]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [savingPatient, setSavingPatient] = useState(false);
 
   // Role permissions (safe navigation if currentUser is null)
   const isCaregiver = currentUser?.role === 'CAREGIVER';
@@ -237,64 +241,57 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return;
-    let active = true;
+    setHeartRate(null);
+    setSpo2(null);
+    setSensorTemp(null);
+    setRoomTemp(null);
+    setHumidity(null);
+    setMotionDetected(null);
+    setHistoryData([]);
 
-    const loadTelemetry = async () => {
-      try {
-        const data = await fetchLatest(selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId);
-        if (!active) return;
-
-        const hr = data.heart_rate?.value ?? null;
-        const oxygen = data.spo2?.value ?? null;
-        const bodyTemp = data.cardio_temp?.value ?? null;
-        const ambientTemp = data.temperature?.value ?? null;
-        const roomHumidity = data.humidity?.value ?? null;
-        const motion = data.motion_detected?.value;
-        const wearableTimestamps = [
-          data.heart_rate?.timestamp,
-          data.spo2?.timestamp,
-          data.cardio_temp?.timestamp,
-        ].filter((value): value is string => Boolean(value));
-        const latestWearableTimestamp = wearableTimestamps.sort().at(-1) ?? null;
-        const latestTimestamp = latestWearableTimestamp ?? data.last_seen;
-
-        setHeartRate(hr);
-        setSpo2(oxygen);
-        setSensorTemp(bodyTemp);
-        setRoomTemp(ambientTemp);
-        setHumidity(roomHumidity);
-        setMotionDetected(motion == null ? null : motion > 0);
-        setRoomTelemetryAt(data.last_seen);
-        setWearableTelemetryAt(latestWearableTimestamp);
-        setTelemetryError(null);
-
-        if (latestTimestamp && hr != null && oxygen != null) {
-          const t = new Date(latestTimestamp).getTime();
-          setHistoryData((previous) => {
-            if (previous.at(-1)?.t === t) return previous;
-            return [...previous, {
-              t,
-              timeStr: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              heartRate: hr ?? undefined,
-              spo2: oxygen ?? undefined,
-              roomTemp: ambientTemp ?? undefined,
-              humidity: roomHumidity ?? undefined,
-              bodyTemp: bodyTemp ?? undefined,
-              motion: motion ?? undefined,
-            }].slice(-24);
-          });
+    const roomEnvironment = `caretrack/${selectedPatient.roomDeviceId}/room/environment`;
+    const roomMotion = `caretrack/${selectedPatient.roomDeviceId}/room/motion`;
+    return subscribeToTelemetry({
+      topics: [roomEnvironment, roomMotion, 'cardiac/monitor/data'],
+      onStatus: (connected, error) => setTelemetryError(error || (connected ? null : 'Reconnecting to sensor broker...')),
+      onMessage: (topic, packet) => {
+        const data = packet.data && typeof packet.data === 'object'
+          ? packet.data as Record<string, unknown>
+          : packet;
+        const timestamp = typeof packet.timestamp === 'string' ? packet.timestamp : new Date().toISOString();
+        if (topic === roomEnvironment) {
+          const temperature = Number(data.temperature);
+          const roomHumidity = Number(data.humidity);
+          if (Number.isFinite(temperature)) setRoomTemp(temperature);
+          if (Number.isFinite(roomHumidity)) setHumidity(roomHumidity);
+          setRoomTelemetryAt(timestamp);
+          return;
         }
-      } catch {
-        if (active) setTelemetryError('Unable to load current readings. Please try again shortly.');
-      }
-    };
+        if (topic === roomMotion) {
+          const motion = data.motion_detected ?? data.motion;
+          setMotionDetected(motion === true || motion === 1 || motion === '1');
+          setRoomTelemetryAt(timestamp);
+          return;
+        }
 
-    loadTelemetry();
-    const refresh = setInterval(loadTelemetry, 15000);
-    return () => {
-      active = false;
-      clearInterval(refresh);
-    };
+        const hr = Number(data.heart_rate);
+        const oxygen = Number(data.spo2);
+        const bodyTemp = data.temp_valid === false ? NaN : Number(data.body_temp ?? data.temperature);
+        if (Number.isFinite(hr) && hr > 0) setHeartRate(hr);
+        if (Number.isFinite(oxygen) && oxygen > 0) setSpo2(oxygen);
+        if (Number.isFinite(bodyTemp) && bodyTemp > 20 && bodyTemp < 50) setSensorTemp(bodyTemp);
+        setWearableTelemetryAt(timestamp);
+        if (hr > 0 && oxygen > 0) {
+          const t = new Date(timestamp).getTime() || Date.now();
+          setHistoryData((previous) => [...previous, {
+            t,
+            timeStr: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            heartRate: hr,
+            spo2: oxygen,
+          }].slice(-24));
+        }
+      },
+    });
   }, [currentUser, selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId]);
 
   const handleAcknowledgeAlert = (id: string) => {
@@ -834,6 +831,7 @@ export default function App() {
               error={patientsError}
               onRetry={() => setPatientsReload((value) => value + 1)}
               selectedPatientId={selectedPatient.id}
+              onEditPatient={setEditingPatient}
               onSelectPatient={(p) => {
                 setSelectedPatient(p);
                 setHeartRate(null);
@@ -1116,6 +1114,25 @@ export default function App() {
           roomNumber={fallAlert.roomNumber}
           onSilence={() => setFallAlert((prev) => ({ ...prev, visible: false }))}
           onConfirm={() => setFallAlert((prev) => ({ ...prev, visible: false }))}
+        />
+        <PatientEditModal
+          patient={editingPatient}
+          saving={savingPatient}
+          onClose={() => setEditingPatient(null)}
+          onSave={async (patient) => {
+            if (!currentUser?.token) return;
+            setSavingPatient(true);
+            try {
+              const saved = await updatePatient(patient, currentUser.token);
+              setPatients((items) => items.map((item) => item.id === saved.id ? saved : item));
+              if (selectedPatient.id === saved.id) setSelectedPatient(saved);
+              setEditingPatient(null);
+            } catch (reason) {
+              Alert.alert('Could not update patient', reason instanceof Error ? reason.message : 'Please try again.');
+            } finally {
+              setSavingPatient(false);
+            }
+          }}
         />
       </SafeAreaView>
     </SafeAreaProvider>

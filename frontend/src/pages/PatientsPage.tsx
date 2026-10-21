@@ -26,6 +26,7 @@ export default function PatientsPage({
   // for this patient is rendered in place of the directory (same page).
   const [viewing, setViewing] = useState<Patient | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [editing, setEditing] = useState<Patient | null>(null);
   const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
 
   useEffect(() => {
@@ -64,16 +65,20 @@ export default function PatientsPage({
     );
   }
 
-  if (showOnboarding && authUser?.token) {
+  if ((showOnboarding || editing) && authUser?.token) {
     return (
       <div className="view-section active">
         <PatientOnboardingForm
           token={authUser.token}
-          onCancel={() => setShowOnboarding(false)}
+          patient={editing || undefined}
+          onCancel={() => { setShowOnboarding(false); setEditing(null); }}
           onCreated={(patient) => {
-            setPatients((current) => [patient, ...current.filter((item) => item.id !== patient.id)]);
+            setPatients((current) => editing
+              ? current.map((item) => item.id === patient.id ? patient : item)
+              : [patient, ...current.filter((item) => item.id !== patient.id)]);
             setSelectedPatient(patient);
             setShowOnboarding(false);
+            setEditing(null);
           }}
         />
       </div>
@@ -179,6 +184,8 @@ export default function PatientsPage({
                 <span className={`status-badge-text ${statusCls}`}>
                   ● {statusText}
                 </span>
+                <div className="patient-card-actions">
+                {authUser?.token && <button type="button" className="ct-btn-ghost" onClick={(e) => { e.stopPropagation(); setEditing(p); }}>Edit</button>}
                 <button
                   type="button"
                   className="ct-btn"
@@ -189,6 +196,7 @@ export default function PatientsPage({
                 >
                   {isSelected ? 'Currently Monitoring ✓' : 'Monitor Patient →'}
                 </button>
+                </div>
               </div>
             </div>
           );

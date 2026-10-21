@@ -48,10 +48,13 @@ export interface Patient {
   gender: 'Female' | 'Male' | 'Other';
   roomNumber: string;
   condition: string;
+  email?: string;
+  dateOfBirth?: string;
   emergencyContact: {
     name: string;
     phone: string;
     relationship: string;
+    email?: string;
   };
   medicalNotes: string;
   assignedCaregiver: string;

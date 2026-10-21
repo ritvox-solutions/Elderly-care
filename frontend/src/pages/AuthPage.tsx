@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { AuthUser, UserRole } from '../lib/store';
 import { DEMO_USERS } from '../lib/store';
-import { API_BASE_URL } from '../lib/api';
+import { API_BASE_URL, demoCaregiverLogin } from '../lib/api';
 
 export default function AuthPage({
   onLogin,
@@ -103,6 +103,19 @@ export default function AuthPage({
     }
   };
 
+  const handleDemoCaregiver = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await demoCaregiverLogin();
+      onLogin({ id: data.user.id, email: data.user.email, fullName: data.user.full_name, role: data.user.role, token: data.access_token });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Demo login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="auth-page">
       <div className="auth-card">
@@ -158,7 +171,8 @@ export default function AuthPage({
               <button
                 type="button"
                 className="auth-direct-btn caregiver"
-                onClick={() => onLogin(DEMO_USERS.CAREGIVER)}
+                onClick={handleDemoCaregiver}
+                disabled={loading}
               >
                 <div className="auth-direct-icon">🩺</div>
                 <div className="auth-direct-content">

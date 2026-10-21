@@ -21,7 +21,7 @@ import {
   Check,
 } from 'lucide-react-native';
 import { theme } from '../theme';
-import { loginUser, registerUser } from '../lib/api';
+import { loginDemoCaregiver, loginUser, registerUser } from '../lib/api';
 
 export type UserRole = 'PATIENT' | 'CAREGIVER';
 
@@ -106,6 +106,19 @@ export function AuthScreen({ onLogin, previousUser }: AuthScreenProps) {
     }
   };
 
+  const handleDemoCaregiver = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await loginDemoCaregiver();
+      onLogin({ id: data.user.id, email: data.user.email, fullName: data.user.full_name, role: data.user.role, token: data.access_token });
+    } catch (reason: any) {
+      setError(reason.message || 'Demo login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -158,7 +171,8 @@ export function AuthScreen({ onLogin, previousUser }: AuthScreenProps) {
               accessibilityRole="button"
               accessibilityLabel="Continue as care taker Dr. Sarah Jenkins"
               style={[styles.directCard, styles.caregiverCard]}
-              onPress={() => onLogin(DEMO_USERS.CAREGIVER)}
+              onPress={handleDemoCaregiver}
+              disabled={loading}
             >
               <View style={[styles.directIcon, { backgroundColor: theme.okBg }]}>
                 <ShieldCheck size={20} color={theme.ok} />

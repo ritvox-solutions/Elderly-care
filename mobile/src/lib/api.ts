@@ -25,6 +25,12 @@ interface PatientRow {
   gender: string;
   room_number: string;
   condition: string;
+  email: string | null;
+  date_of_birth: string;
+  medical_notes: string | null;
+  emergency_contact_name: string;
+  emergency_contact_phone: string;
+  emergency_contact_email: string | null;
   status: string;
   room_device_id: string;
   wearable_device_id: string;
@@ -80,6 +86,10 @@ export function loginUser(email: string, password: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
+}
+
+export function loginDemoCaregiver() {
+  return request<LoginResponse>('/api/v1/auth/demo-login', { method: 'POST' });
 }
 
 export function registerPushToken(token: string, accessToken: string) {
@@ -163,14 +173,41 @@ export async function fetchPatients(token?: string): Promise<Patient[]> {
     gender: row.gender === 'Female' || row.gender === 'Male' ? row.gender : 'Other',
     roomNumber: row.room_number,
     condition: row.condition,
-    emergencyContact: { name: '', phone: '', relationship: '' },
-    medicalNotes: row.condition,
+    email: row.email || undefined,
+    dateOfBirth: row.date_of_birth,
+    emergencyContact: {
+      name: row.emergency_contact_name,
+      phone: row.emergency_contact_phone,
+      email: row.emergency_contact_email || undefined,
+      relationship: '',
+    },
+    medicalNotes: row.medical_notes || row.condition,
     assignedCaregiver: '',
     roomDeviceId: row.room_device_id,
     wearableDeviceId: row.wearable_device_id,
     status:
       row.status === 'STABLE' || row.status === 'CRITICAL' ? row.status : 'ATTENTION',
   }));
+}
+
+export async function updatePatient(patient: Patient, token: string): Promise<Patient> {
+  const row = await request<PatientRow>(`/api/v1/patients/${encodeURIComponent(patient.id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      first_name: patient.firstName,
+      last_name: patient.lastName,
+      email: patient.email || null,
+      date_of_birth: patient.dateOfBirth,
+      gender: patient.gender,
+      room_number: patient.roomNumber,
+      medical_notes: patient.medicalNotes,
+      emergency_contact_name: patient.emergencyContact.name,
+      emergency_contact_phone: patient.emergencyContact.phone,
+      emergency_contact_email: patient.emergencyContact.email || null,
+    }),
+  });
+  return (await fetchPatients(token)).find((item) => item.id === String(row.id))!;
 }
 
 export async function fetchLatest(roomDeviceId: string, wearableDeviceId: string): Promise<LatestResponse> {

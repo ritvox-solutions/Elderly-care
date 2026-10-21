@@ -1322,6 +1322,7 @@ footer.meta {
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+.patient-card-actions { display: flex; gap: 8px; }
 .status-badge-text {
   font-size: 11.5px;
   font-weight: 700;

@@ -23,6 +23,7 @@ interface PatientsScreenProps {
   error: string | null;
   onRetry: () => void;
   onSelectPatient: (patient: Patient) => void;
+  onEditPatient: (patient: Patient) => void;
   selectedPatientId?: string;
 }
 
@@ -33,6 +34,7 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
   error,
   onRetry,
   onSelectPatient,
+  onEditPatient,
   selectedPatientId,
 }) => {
   const [search, setSearch] = useState('');
@@ -173,11 +175,16 @@ export const PatientsScreen: React.FC<PatientsScreenProps> = ({
                   </Text>
                 </View>
 
+                <View style={styles.cardActions}>
+                <TouchableOpacity style={styles.editButton} onPress={() => onEditPatient(patient)}>
+                  <Text style={styles.editText}>Edit</Text>
+                </TouchableOpacity>
                 <View style={styles.ctaButton}>
                   <Text style={styles.ctaText}>
                     {isSelected ? 'Monitoring Active' : 'Monitor Patient'}
                   </Text>
                   <ChevronRight size={14} color="#ffffff" />
+                </View>
                 </View>
               </View>
             </TouchableOpacity>
@@ -408,6 +415,9 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     gap: 4,
   },
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editButton: { paddingVertical: 6, paddingHorizontal: 10 },
+  editText: { color: theme.accent, fontSize: 11.5, fontWeight: '700' },
   ctaText: {
     fontSize: 11.5,
     fontWeight: '700',

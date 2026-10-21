@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "CareTrack",
-    "slug": "caretrack-elderly-care",
+    "slug": "ritvox",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -16,6 +16,12 @@
         "backgroundColor": "#134135"
       },
       "package": "com.anonymous.caretrackelderlycare"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "44bff105-cdd6-4c70-93ed-688d18863956"
+      }
+    },
+    "owner": "ritvoxs-team"
   }
 }

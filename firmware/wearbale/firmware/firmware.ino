@@ -264,7 +264,7 @@ void publishReading(const Reading &r) {
   char payload[384];
   snprintf(payload, sizeof(payload),
            "{\"heart_rate\":%d,\"spo2\":%.1f,\"spo2_low\":%s,"
-           "\"temperature\":%.1f,\"temp_valid\":false,"
+           "\"device_temperature\":%.1f,\"temp_valid\":false,"
            "\"battery\":100,\"battery_valid\":false,"
            "\"signal_quality\":%.2f,\"fall_detected\":%s,"
            "\"accel_magnitude\":%.2f,\"timestamp\":%lu,\"epoch\":%lu}",

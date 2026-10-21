@@ -174,7 +174,9 @@ export function useCardio() {
             // `pick` handles both shapes.
             const rawHr = Number(pick(data, 'heart_rate') ?? 0);
             const rawSpo2 = Number(pick(data, 'spo2') ?? 0);
-            const rawTemp = Number(pick(data, 'body_temp') ?? pick(data, 'temperature') ?? 0);
+            const rawTemp = data.temp_valid === false
+              ? 0
+              : Number(pick(data, 'body_temp') ?? pick(data, 'temperature') ?? 0);
             if (!rawHr && !rawSpo2 && !rawTemp) return;
 
             hasLiveData.current = true;

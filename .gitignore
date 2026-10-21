@@ -25,6 +25,7 @@ env/
 secrets.h
 config.h
 credentials.h
+firebase-service-account*.json
 
 # Local databases and logs
 *.db

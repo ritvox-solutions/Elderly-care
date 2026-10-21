@@ -24,34 +24,36 @@ export interface FallNotificationData {
 }
 
 export async function enableFallPushNotifications(accessToken: string) {
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('fall-alerts', {
-      name: 'Critical fall alerts',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 500, 250, 500, 250, 500],
-      lightColor: '#e11d48',
-      sound: 'default',
-    });
-  }
+  try {
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('fall-alerts-v2', {
+        name: 'Critical fall alerts',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 250, 500, 250, 500],
+        lightColor: '#e11d48',
+      });
+    }
 
-  const existing = await Notifications.getPermissionsAsync();
-  const permission = existing.status === 'granted'
-    ? existing
-    : await Notifications.requestPermissionsAsync();
-  if (permission.status !== 'granted') return false;
+    const existing = await Notifications.getPermissionsAsync();
+    const permission = existing.status === 'granted'
+      ? existing
+      : await Notifications.requestPermissionsAsync();
+    if (permission.status !== 'granted') return false;
 
-  const projectId =
-    process.env.EXPO_PUBLIC_EAS_PROJECT_ID ||
-    Constants.expoConfig?.extra?.eas?.projectId ||
-    Constants.easConfig?.projectId;
-  if (!projectId) {
-    console.warn('Fall push notifications need EXPO_PUBLIC_EAS_PROJECT_ID or an EAS project link.');
+    const projectId =
+      process.env.EXPO_PUBLIC_EAS_PROJECT_ID ||
+      Constants.expoConfig?.extra?.eas?.projectId ||
+      Constants.easConfig?.projectId;
+    if (!projectId) return false;
+
+    const pushToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    await registerPushToken(pushToken, accessToken);
+    return true;
+  } catch (error) {
+    // Missing native Firebase configuration is expected until google-services.json is supplied and the app is rebuilt.
+    console.info('Fall push notifications are unavailable in this build.', error);
     return false;
   }
-
-  const pushToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-  await registerPushToken(pushToken, accessToken);
-  return true;
 }
 
 export function readFallNotification(notification: Notifications.Notification): FallNotificationData | null {

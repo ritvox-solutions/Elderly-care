@@ -260,16 +260,18 @@ bool postFallToBackend(const char* payload) {
 void publishReading(const Reading &r) {
   time_t now = time(nullptr);
   unsigned long epoch = (now > 1700000000) ? (unsigned long)now : 0UL;
+  bool tempValid = (lastTempC >= 15.0f && lastTempC <= 60.0f);
 
   char payload[384];
   snprintf(payload, sizeof(payload),
            "{\"heart_rate\":%d,\"spo2\":%.1f,\"spo2_low\":%s,"
-           "\"device_temperature\":%.1f,\"temp_valid\":false,"
+           "\"temperature\":%.1f,\"device_temperature\":%.1f,\"temp_valid\":%s,"
            "\"battery\":100,\"battery_valid\":false,"
            "\"signal_quality\":%.2f,\"fall_detected\":%s,"
            "\"accel_magnitude\":%.2f,\"timestamp\":%lu,\"epoch\":%lu}",
            r.hr, r.spo2, r.spo2Low ? "true" : "false",
-           lastTempC, r.piPct, r.fallDetected ? "true" : "false",
+           lastTempC, lastTempC, tempValid ? "true" : "false",
+           r.piPct, r.fallDetected ? "true" : "false",
            r.accelG, (unsigned long)r.ms, epoch);
 
   if (mqttClient.connected() && mqttClient.publish(MQTT_TOPIC, payload)) {

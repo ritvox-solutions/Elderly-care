@@ -40,6 +40,25 @@ export interface PatientOnboardingInput {
   wearable_device_id: string;
 }
 
+function apiErrorMessage(body: unknown, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item?.msg !== 'string') return '';
+        const field = Array.isArray(item.loc) ? item.loc.at(-1) : null;
+        const label = typeof field === 'string'
+          ? field.replaceAll('_', ' ').replace(/^./, (character: string) => character.toUpperCase())
+          : '';
+        return label ? `${label}: ${item.msg}` : item.msg;
+      })
+      .filter(Boolean)
+      .join(', ') || fallback;
+  }
+  return fallback;
+}
+
 function mapPatient(data: PatientApiResponse): Patient {
   return {
     id: data.id,
@@ -99,14 +118,11 @@ export async function createPatient(input: PatientOnboardingInput, token: string
   const response = await fetch(`${API_BASE_URL}/api/v1/patients`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, email: input.email || null }),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    const detail = Array.isArray(error.detail)
-      ? error.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join(', ')
-      : error.detail;
-    throw new Error(detail || `Patient onboarding failed (${response.status})`);
+    throw new Error(apiErrorMessage(error, `Patient onboarding failed (${response.status})`));
   }
   return mapPatient((await response.json()) as PatientApiResponse);
 }
@@ -119,13 +135,24 @@ export async function updatePatient(
   const response = await fetch(`${API_BASE_URL}/api/v1/patients/${encodeURIComponent(patientId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, email: input.email || null }),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `Patient update failed (${response.status})`);
+    throw new Error(apiErrorMessage(error, `Patient update failed (${response.status})`));
   }
   return mapPatient((await response.json()) as PatientApiResponse);
+}
+
+export async function deletePatient(patientId: string, token: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/patients/${encodeURIComponent(patientId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(error, `Patient deletion failed (${response.status})`));
+  }
 }
 
 export async function demoCaregiverLogin() {

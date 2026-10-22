@@ -18,21 +18,12 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <DHT.h>
+#include "secrets.h"
 
 // --- Pin Configuration ---
 #define PIR_PIN  D2   // NodeMCU D2 (GPIO 4)
 #define DHT_PIN  D5   // NodeMCU D5 (GPIO 14)
 #define DHT_TYPE DHT11
-
-// --- WiFi Credentials ---
-#define WIFI_SSID     "RUSTECEAN"
-#define WIFI_PASSWORD "1234567890"
-
-// --- HiveMQ Cloud MQTT ---
-#define MQTT_BROKER_URL "592dc9d2e79e40e1bf88e094608c669a.s1.eu.hivemq.cloud"
-#define MQTT_PORT       8883
-#define MQTT_USERNAME   "room-kit"
-#define MQTT_PASSWORD   "Room-Kit@1"
 
 #define DEVICE_ID "room-unit-01"
 

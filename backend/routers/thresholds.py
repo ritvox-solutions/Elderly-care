@@ -98,19 +98,21 @@ def get_or_create_patient_threshold(patient_id: str, db: Session) -> PatientThre
 def get_patient_threshold_dict(patient_id: str | None, db: Session | None = None) -> dict:
     if not patient_id:
         return ACTIVE_THRESHOLDS
-    if patient_id in PATIENT_THRESHOLDS_CACHE:
-        return PATIENT_THRESHOLDS_CACHE[patient_id]
+    patient_key = str(patient_id)
+    if patient_key in PATIENT_THRESHOLDS_CACHE:
+        return PATIENT_THRESHOLDS_CACHE[patient_key]
     if db is not None:
         try:
-            rec = db.query(PatientThreshold).filter(PatientThreshold.patient_id == patient_id).first()
+            rec = db.query(PatientThreshold).filter(PatientThreshold.patient_id == patient_key).first()
             if rec:
                 data = rec.to_dict()
-                PATIENT_THRESHOLDS_CACHE[patient_id] = data
+                PATIENT_THRESHOLDS_CACHE[patient_key] = data
                 return data
         except Exception:
+            db.rollback()
             pass
-    if patient_id in DEFAULT_PATIENT_CONFIGS:
-        return DEFAULT_PATIENT_CONFIGS[patient_id]
+    if patient_key in DEFAULT_PATIENT_CONFIGS:
+        return DEFAULT_PATIENT_CONFIGS[patient_key]
     return ACTIVE_THRESHOLDS
 
 

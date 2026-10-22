@@ -1,4 +1,4 @@
-import type { LatestResponse, Patient } from '../types';
+import type { LatestResponse, Patient, Thresholds } from '../types';
 
 export const API_BASE_URL = (
   process.env.EXPO_PUBLIC_API_BASE_URL ||
@@ -36,6 +36,16 @@ interface PatientRow {
   wearable_device_id: string;
 }
 
+interface ThresholdRow {
+  patient_id: string;
+  hr_min: number;
+  hr_max: number;
+  spo2_min: number;
+  fall_g: number;
+  room_temp_min: number;
+  room_temp_max: number;
+}
+
 export interface LiveAlert {
   type: 'alert';
   alert_id: string;
@@ -50,6 +60,18 @@ export interface LiveAlert {
   room_number?: string | null;
 }
 
+function apiErrorMessage(body: unknown, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => typeof item?.msg === 'string' ? item.msg : '')
+      .filter(Boolean)
+      .join(', ') || fallback;
+  }
+  return fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -60,9 +82,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `Backend request failed (${response.status}).`);
+    throw new Error(apiErrorMessage(body, `Backend request failed (${response.status}).`));
   }
 
+  if (response.status === 204) return undefined as T;
   return response.json();
 }
 
@@ -208,6 +231,50 @@ export async function updatePatient(patient: Patient, token: string): Promise<Pa
     }),
   });
   return (await fetchPatients(token)).find((item) => item.id === String(row.id))!;
+}
+
+export function deletePatient(patientId: string, token: string) {
+  return request<void>(`/api/v1/patients/${encodeURIComponent(patientId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+function mapThresholds(row: ThresholdRow): Thresholds {
+  return {
+    hrMin: Number(row.hr_min),
+    hrMax: Number(row.hr_max),
+    spo2Min: Number(row.spo2_min),
+    fallThresholdG: Number(row.fall_g),
+    roomTempMin: Number(row.room_temp_min),
+    roomTempMax: Number(row.room_temp_max),
+  };
+}
+
+export async function fetchPatientThresholds(patientId: string, token: string): Promise<Thresholds> {
+  const query = new URLSearchParams({ patient_id: patientId });
+  const row = await request<ThresholdRow>(`/api/v1/thresholds?${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return mapThresholds(row);
+}
+
+export async function savePatientThresholds(patientId: string, thresholds: Thresholds, token: string): Promise<Thresholds> {
+  const query = new URLSearchParams({ patient_id: patientId });
+  const row = await request<ThresholdRow>(`/api/v1/thresholds?${query}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      patient_id: patientId,
+      hr_min: thresholds.hrMin,
+      hr_max: thresholds.hrMax,
+      spo2_min: thresholds.spo2Min,
+      fall_g: thresholds.fallThresholdG,
+      room_temp_min: thresholds.roomTempMin,
+      room_temp_max: thresholds.roomTempMax,
+    }),
+  });
+  return mapThresholds(row);
 }
 
 export async function fetchLatest(roomDeviceId: string, wearableDeviceId: string): Promise<LatestResponse> {

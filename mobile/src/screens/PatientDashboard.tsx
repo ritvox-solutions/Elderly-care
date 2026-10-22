@@ -1,6 +1,6 @@
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
-import { Activity, ArrowLeft, CloudSun, Heart, Home, Radio, ShieldCheck, Thermometer, Wifi } from 'lucide-react-native';
+import React, { useState } from 'react';
+import { Modal, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { Activity, ArrowLeft, CloudSun, Heart, Home, Pencil, Radio, Settings, ShieldCheck, Thermometer, Wifi, X } from 'lucide-react-native';
 import { MetricCard } from '../components/MetricCard';
 import { TelemetryChart } from '../components/TelemetryChart';
 import { theme } from '../theme';
@@ -19,6 +19,7 @@ interface PatientDashboardProps {
   wearableUpdatedAt: string | null;
   error: string | null;
   onBack: () => void;
+  onEdit?: () => void;
 }
 
 const reading = (value: number | null, decimals = 0) =>
@@ -37,7 +38,9 @@ export function PatientDashboard({
   wearableUpdatedAt,
   error,
   onBack,
+  onEdit,
 }: PatientDashboardProps) {
+  const [showSettings, setShowSettings] = useState(false);
   const { width } = useWindowDimensions();
   const isTablet = width >= 760;
   const patientStatus = heartRate != null && spo2 != null && (heartRate < 50 || heartRate > 110 || spo2 < 92)
@@ -73,6 +76,49 @@ export function PatientDashboard({
         </View>
         <View style={styles.stableBadge}><Text style={styles.stableText}>● {patient.status}</Text></View>
       </View>
+
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel="Open patient settings"
+        style={styles.settingsToggle}
+        onPress={() => setShowSettings(true)}
+      >
+        <Settings size={15} color={theme.accent} />
+        <Text style={styles.settingsToggleText}>Patient Settings</Text>
+      </TouchableOpacity>
+
+      <Modal visible={showSettings} transparent animationType="fade" onRequestClose={() => setShowSettings(false)} accessibilityViewIsModal>
+        <View style={styles.settingsModal}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close patient settings" activeOpacity={1} style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
+          <View style={styles.settingsCard}>
+            <View style={styles.settingsHeader}>
+              <View style={styles.settingsHeading}>
+                <Text style={styles.settingsTitle}>Patient Settings</Text>
+                <Text style={styles.settingsHelp}>Details and emergency alert contact</Text>
+              </View>
+              <View style={styles.settingsActions}>
+                {onEdit ? (
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel="Edit patient details" style={styles.editButton} onPress={() => { setShowSettings(false); onEdit(); }}>
+                    <Pencil size={13} color={theme.accent} />
+                    <Text style={styles.editButtonText}>Edit</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close patient settings" style={styles.closeButton} onPress={() => setShowSettings(false)}>
+                  <X size={16} color={theme.text2} />
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.detailsGrid}>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Patient email</Text><Text style={styles.detailValue}>{patient.email || 'Not provided'}</Text></View>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Date of birth</Text><Text style={styles.detailValue}>{patient.dateOfBirth || 'Not provided'}</Text></View>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Medical notes</Text><Text style={styles.detailValue}>{patient.medicalNotes || patient.condition || 'None'}</Text></View>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Emergency contact</Text><Text style={styles.detailValue}>{patient.emergencyContact.name || 'Not provided'}</Text></View>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Contact phone</Text><Text style={styles.detailValue}>{patient.emergencyContact.phone || 'Not provided'}</Text></View>
+              <View style={styles.detailItem}><Text style={styles.detailLabel}>Contact email</Text><Text style={styles.detailValue}>{patient.emergencyContact.email || 'Not provided'}</Text></View>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {error ? (
         <View style={styles.errorBanner}>
@@ -153,6 +199,23 @@ const styles = StyleSheet.create({
   roomBadgeText: { color: theme.accent, fontSize: 9.5, fontWeight: '800' },
   stableBadge: { marginLeft: 6 },
   stableText: { color: theme.ok, fontSize: 9, fontWeight: '800' },
+  settingsToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.borderStrong, borderRadius: 10, paddingVertical: 10, marginBottom: 14 },
+  settingsToggleText: { color: theme.accent, fontSize: 11.5, fontWeight: '800' },
+  settingsModal: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
+  settingsBackdrop: { position: 'absolute', inset: 0, backgroundColor: 'rgba(15,23,42,.58)' },
+  settingsCard: { width: '100%', maxWidth: 620, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, borderRadius: 14, padding: 16 },
+  settingsHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 12 },
+  settingsHeading: { flex: 1 },
+  settingsTitle: { color: theme.text, fontSize: 13, fontWeight: '800' },
+  settingsHelp: { color: theme.text3, fontSize: 10, marginTop: 2 },
+  settingsActions: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  editButton: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderColor: theme.borderStrong, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
+  editButtonText: { color: theme.accent, fontSize: 11, fontWeight: '800' },
+  closeButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: theme.borderStrong, borderRadius: 8 },
+  detailsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  detailItem: { width: '47%' },
+  detailLabel: { color: theme.text3, fontSize: 9.5, marginBottom: 2 },
+  detailValue: { color: theme.text, fontSize: 11, fontWeight: '600' },
   errorBanner: { backgroundColor: theme.badBg, borderWidth: 1, borderColor: theme.badBorder, borderRadius: 10, padding: 11, marginBottom: 12 },
   errorTitle: { color: theme.bad, fontSize: 12, fontWeight: '800' },
   errorText: { color: theme.bad, fontSize: 10.5, marginTop: 2 },

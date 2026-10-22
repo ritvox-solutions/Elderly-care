@@ -38,6 +38,8 @@ class User(Base):
     full_name = Column(String(255), nullable=False)
     role = Column(String(50), default=UserRole.CAREGIVER.value, nullable=False)
     phone_number = Column(String(50), nullable=True)
+    # shortcut: one phone per account; use a subscriptions table when multi-device support is needed.
+    expo_push_token = Column(String(255), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)

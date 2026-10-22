@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "264081806298",
+    "project_id": "elderly-care-3c675",
+    "storage_bucket": "elderly-care-3c675.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:264081806298:android:37636da64626ea627e26e3",
+        "android_client_info": {
+          "package_name": "com.anonymous.caretrackelderlycare"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7t4d5-SPQxS88QinruiNiNnXvbfG4-0E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

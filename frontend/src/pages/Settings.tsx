@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useApp, DEMO_PATIENTS } from '../lib/store';
-import { fetchPatientThresholds, savePatientThresholds } from '../lib/api';
-import type { Thresholds } from '../lib/types';
+import { useApp } from '../lib/store';
+import { fetchPatients, fetchPatientThresholds, savePatientThresholds } from '../lib/api';
+import type { Patient, Thresholds } from '../lib/types';
 
 export default function Settings({
   connected,
@@ -16,15 +16,10 @@ export default function Settings({
 
   const isCaregiver = role === 'CAREGIVER';
 
-  // Target patient for threshold configuration
-  const [targetPatientId, setTargetPatientId] = useState<string>(() => {
-    if (!isCaregiver && authUser?.role === 'PATIENT') {
-      return 'p-001';
-    }
-    return selectedPatient?.id || 'p-001';
-  });
-
-  const activePatient = DEMO_PATIENTS.find((p) => p.id === targetPatientId) || DEMO_PATIENTS[0];
+  const [patients, setPatients] = useState<Patient[]>(isCaregiver ? [] : [selectedPatient]);
+  const [patientDirectoryReady, setPatientDirectoryReady] = useState(!isCaregiver);
+  const [targetPatientId, setTargetPatientId] = useState(selectedPatient.id);
+  const activePatient = patients.find((p) => p.id === targetPatientId) || selectedPatient;
 
   // Threshold draft state for the selected patient
   const [draft, setDraft] = useState<Thresholds>({
@@ -46,8 +41,37 @@ export default function Settings({
   const [dev, setDev] = useState(deviceId);
   const [saved, setSaved] = useState(false);
 
+  // Settings must use database IDs; legacy demo IDs could create thresholds for the wrong patient.
+  useEffect(() => {
+    if (!isCaregiver || !authUser?.token) return;
+
+    let cancelled = false;
+    fetchPatients(authUser.token)
+      .then((rows) => {
+        if (cancelled) return;
+        setPatients(rows);
+        if (rows.length) {
+          setTargetPatientId((current) => rows.some((item) => item.id === current) ? current : rows[0].id);
+        } else {
+          setThreshError('No database patients are assigned to this caregiver.');
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setThreshError(err instanceof Error ? err.message : 'Failed to load patient directory');
+      })
+      .finally(() => {
+        if (!cancelled) setPatientDirectoryReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.token, isCaregiver]);
+
   // When target patient changes, fetch their tailored thresholds from PostgreSQL
   useEffect(() => {
+    if (!patientDirectoryReady || (isCaregiver && !patients.some((p) => p.id === targetPatientId))) return;
+
     let cancelled = false;
     async function loadThresholds() {
       setLoadingThresholds(true);
@@ -77,7 +101,7 @@ export default function Settings({
     return () => {
       cancelled = true;
     };
-  }, [targetPatientId]);
+  }, [isCaregiver, patientDirectoryReady, patients, targetPatientId]);
 
   const num = (v: string, fallback: number) => {
     const n = Number(v);
@@ -113,18 +137,7 @@ export default function Settings({
   };
 
   const handleResetDefaults = () => {
-    // Clinically tailored baselines
-    let recommended: Thresholds;
-    if (targetPatientId === 'p-001') {
-      recommended = { patientId: 'p-001', hrMin: 55, hrMax: 100, spo2Min: 94, fallG: 2.8, roomTempMin: 19.0, roomTempMax: 26.0 };
-    } else if (targetPatientId === 'p-002') {
-      recommended = { patientId: 'p-002', hrMin: 50, hrMax: 95, spo2Min: 92, fallG: 3.0, roomTempMin: 20.0, roomTempMax: 27.0 };
-    } else if (targetPatientId === 'p-003') {
-      recommended = { patientId: 'p-003', hrMin: 60, hrMax: 110, spo2Min: 90, fallG: 2.2, roomTempMin: 21.0, roomTempMax: 26.5 };
-    } else {
-      recommended = { patientId: targetPatientId, hrMin: 50, hrMax: 110, spo2Min: 92, fallG: 3.0, roomTempMin: 18.0, roomTempMax: 28.0 };
-    }
-    setDraft(recommended);
+    setDraft({ patientId: targetPatientId, hrMin: 50, hrMax: 110, spo2Min: 92, fallG: 3.0, roomTempMin: 18.0, roomTempMax: 28.0 });
   };
 
   return (
@@ -218,18 +231,18 @@ export default function Settings({
                   id="patient-dropdown-select"
                   className="ct-select patient-select-dropdown"
                   value={targetPatientId}
-                  disabled={!isCaregiver}
+                  disabled={!isCaregiver || !patientDirectoryReady || patients.length === 0}
                   onChange={(e) => {
                     const pid = e.target.value;
                     setTargetPatientId(pid);
-                    const p = DEMO_PATIENTS.find((item) => item.id === pid);
+                    const p = patients.find((item) => item.id === pid);
                     if (p && isCaregiver) {
                       // Also switch active patient context for monitoring
                       setSelectedPatient(p);
                     }
                   }}
                 >
-                  {DEMO_PATIENTS.map((p) => (
+                  {patients.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.firstName} {p.lastName} — {p.roomNumber} ({p.condition.split(',')[0]})
                     </option>

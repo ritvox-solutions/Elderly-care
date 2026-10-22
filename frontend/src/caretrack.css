@@ -612,6 +612,64 @@ tbody tr.fresh td, .log-item.fresh { animation: rowin 0.4s ease; }
   font-size: 13px;
   color: var(--text-3);
 }
+.patient-settings-toggle { margin-left: auto; flex-shrink: 0; }
+.patient-settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.58);
+}
+.patient-settings-card {
+  margin-bottom: 18px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.patient-settings-dialog {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 40px);
+  margin: 0;
+  overflow-y: auto;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.24);
+}
+.patient-edit-dialog {
+  width: min(860px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+.patient-edit-dialog .patient-onboarding {
+  max-width: none;
+  margin: 0;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.24);
+}
+.patient-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.patient-settings-head h2 { margin: 0; font-size: 15px; }
+.patient-settings-head p { margin: 3px 0 0; color: var(--text-3); font-size: 12px; }
+.patient-settings-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.patient-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin: 0;
+}
+.patient-settings-grid div { min-width: 0; }
+.patient-settings-grid dt { color: var(--text-3); font-size: 11px; }
+.patient-settings-grid dd { margin: 3px 0 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .patient-monitor-head { flex-wrap: wrap; }
+  .patient-settings-toggle { margin-left: 0; }
+  .patient-settings-grid { grid-template-columns: 1fr; }
+}
 .patient-monitor-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -752,6 +810,21 @@ footer.meta {
   white-space: nowrap;
 }
 .ct-btn-ghost:hover { background: #f4f6f5; }
+.ct-btn-danger {
+  appearance: none;
+  border: 1px solid #b4232a;
+  background: #fff;
+  color: #b4232a;
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+  margin-right: auto;
+}
+.ct-btn-danger:hover { background: #fdeeee; }
+.ct-btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .alert-actions {
   display: flex;
   gap: 8px;

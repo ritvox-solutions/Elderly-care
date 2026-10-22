@@ -1,6 +1,6 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from core.dependencies import require_role
@@ -15,56 +15,10 @@ from models import (
     User,
     UserRole,
 )
-from schemas.patient import PatientCreateRequest, PatientDirectoryResponse
+from schemas.patient import PatientCreateRequest, PatientDirectoryResponse, PatientUpdateRequest
 
 
 router = APIRouter(prefix="/api/v1/patients", tags=["Patients Directory"])
-
-PATIENTS_DATA = [
-    {
-        "id": "p-001",
-        "first_name": "Margaret",
-        "last_name": "Thatcher",
-        "age": 84,
-        "gender": "Female",
-        "room_number": "Room 204",
-        "condition": "Post-cardiac stent, mobility risk, mild hypertension",
-        "status": "STABLE",
-        "room_device_id": "room-unit-01",
-        "wearable_device_id": "ESP32-CardiacMonitor",
-        "vitals": {"hr": 76, "spo2": 98, "temp": 36.6},
-        "room_env": {"temp": 23.5, "humidity": 48},
-    },
-    {
-        "id": "p-002",
-        "first_name": "Arthur",
-        "last_name": "Pendleton",
-        "age": 79,
-        "gender": "Male",
-        "room_number": "Room 108",
-        "condition": "Arrhythmia history, pacemaker, type 2 diabetes",
-        "status": "ATTENTION",
-        "room_device_id": "room-unit-02",
-        "wearable_device_id": "ESP32-CardiacMonitor-02",
-        "vitals": {"hr": 88, "spo2": 94, "temp": 36.8},
-        "room_env": {"temp": 24.1, "humidity": 52},
-    },
-    {
-        "id": "p-003",
-        "first_name": "Eleanor",
-        "last_name": "Vance",
-        "age": 91,
-        "gender": "Female",
-        "room_number": "Room 312",
-        "condition": "Severe osteoporosis, chronic COPD, high fall risk",
-        "status": "CRITICAL",
-        "room_device_id": "room-unit-03",
-        "wearable_device_id": "ESP32-CardiacMonitor-03",
-        "vitals": {"hr": 64, "spo2": 91, "temp": 36.4},
-        "room_env": {"temp": 22.8, "humidity": 45},
-    },
-]
-
 
 def _age(date_of_birth: date) -> int:
     today = date.today()
@@ -83,10 +37,16 @@ def _patient_directory_row(patient: Patient) -> dict:
         "id": patient.id,
         "first_name": patient.first_name,
         "last_name": patient.last_name,
+        "email": patient.email,
+        "date_of_birth": patient.date_of_birth,
         "age": _age(patient.date_of_birth),
         "gender": patient.gender or "Not specified",
         "room_number": patient.room_number or "Unassigned",
         "condition": patient.medical_notes or "No medical notes provided",
+        "medical_notes": patient.medical_notes,
+        "emergency_contact_name": patient.emergency_contact_name,
+        "emergency_contact_phone": patient.emergency_contact_phone,
+        "emergency_contact_email": patient.emergency_contact_email,
         "status": "STABLE",
         "room_device_id": devices.get(DeviceType.ROOM_KIT.value, "Unassigned"),
         "wearable_device_id": devices.get(DeviceType.WEARABLE.value, "Unassigned"),
@@ -96,18 +56,20 @@ def _patient_directory_row(patient: Patient) -> dict:
 
 
 @router.get("", response_model=list[PatientDirectoryResponse])
-def list_patients(db: Session = Depends(get_db)):
-    # Keep the original demo cards while replacing matching rooms with saved records.
-    rows = [dict(row) for row in PATIENTS_DATA]
-    room_indexes = {row["room_number"].lower(): index for index, row in enumerate(rows)}
-    for patient in db.query(Patient).filter(Patient.is_active.is_(True)).all():
-        row = _patient_directory_row(patient)
-        index = room_indexes.get(row["room_number"].lower())
-        if index is None:
-            rows.append(row)
-        else:
-            rows[index] = row
-    return rows
+def list_patients(
+    db: Session = Depends(get_db),
+    caregiver: User = Depends(require_role(UserRole.CAREGIVER)),
+):
+    return [
+        _patient_directory_row(patient)
+        for patient in db.query(Patient)
+        .join(CaregiverAssignment, CaregiverAssignment.patient_id == Patient.id)
+        .filter(
+            Patient.is_active.is_(True),
+            CaregiverAssignment.caregiver_id == caregiver.id,
+        )
+        .all()
+    ]
 
 
 @router.post("", response_model=PatientDirectoryResponse, status_code=status.HTTP_201_CREATED)
@@ -142,7 +104,11 @@ def create_patient(
                 .first()
             )
             if active_pairing:
-                raise HTTPException(status_code=409, detail=f"Device {identifier} is already paired")
+                if active_pairing.patient.is_active:
+                    raise HTTPException(status_code=409, detail=f"Device {identifier} is already paired")
+                # Repair pairings left active by deployments that predate patient deletion support.
+                active_pairing.is_active = False
+                active_pairing.unpaired_at = datetime.now(timezone.utc)
             if device.device_type != device_type:
                 raise HTTPException(status_code=409, detail=f"Device {identifier} has the wrong device type")
         else:
@@ -158,6 +124,7 @@ def create_patient(
     patient = Patient(
         first_name=request.first_name,
         last_name=request.last_name,
+        email=str(request.email).lower() if request.email else None,
         date_of_birth=request.date_of_birth,
         gender=request.gender,
         room_number=request.room_number,
@@ -175,3 +142,67 @@ def create_patient(
     db.commit()
     db.refresh(patient)
     return _patient_directory_row(patient)
+
+
+@router.patch("/{patient_id}", response_model=PatientDirectoryResponse)
+def update_patient(
+    patient_id: str,
+    request: PatientUpdateRequest,
+    db: Session = Depends(get_db),
+    caregiver: User = Depends(require_role(UserRole.CAREGIVER)),
+):
+    """Partially update a patient assigned to the authenticated caregiver."""
+    patient = db.query(Patient).filter(Patient.id == patient_id, Patient.is_active.is_(True)).first()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    assigned = db.query(CaregiverAssignment).filter_by(
+        caregiver_id=caregiver.id,
+        patient_id=patient.id,
+    ).first()
+    if assigned is None:
+        raise HTTPException(status_code=403, detail="Patient is not assigned to this caregiver")
+
+    changes = request.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="No patient fields supplied")
+    if "room_number" in changes:
+        duplicate = db.query(Patient).filter(
+            Patient.room_number == changes["room_number"],
+            Patient.id != patient.id,
+            Patient.is_active.is_(True),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="An active patient already uses this room number")
+    for field, value in changes.items():
+        if field in {"email", "emergency_contact_email"} and value is not None:
+            value = str(value).lower()
+        setattr(patient, field, value)
+    db.commit()
+    db.refresh(patient)
+    return _patient_directory_row(patient)
+
+
+@router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_patient(
+    patient_id: str,
+    db: Session = Depends(get_db),
+    caregiver: User = Depends(require_role(UserRole.CAREGIVER)),
+):
+    """Deactivate an assigned patient and release their paired devices."""
+    patient = db.query(Patient).filter(Patient.id == patient_id, Patient.is_active.is_(True)).first()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    assigned = db.query(CaregiverAssignment).filter_by(
+        caregiver_id=caregiver.id,
+        patient_id=patient.id,
+    ).first()
+    if assigned is None:
+        raise HTTPException(status_code=403, detail="Patient is not assigned to this caregiver")
+
+    patient.is_active = False
+    for pairing in patient.device_pairings:
+        pairing.is_active = False
+        pairing.unpaired_at = datetime.now(timezone.utc)
+        pairing.device.status = DeviceStatus.UNPAIRED.value
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

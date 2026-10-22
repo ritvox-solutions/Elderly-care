@@ -13,17 +13,18 @@
 5. [Firmware Flashing & Setup](#-firmware-flashing--setup)
 6. [Database & Backend Setup](#-database--backend-setup)
 7. [Running & Accessing the Web Dashboards](#-running--accessing-the-web-dashboards)
-8. [Hardware-Free Testing (Telemetry Simulator)](#-hardware-free-testing-telemetry-simulator)
-9. [MQTT Topics & Payload Data Contracts](#-mqtt-topics--payload-data-contracts)
-10. [REST API & WebSocket Reference](#-rest-api--websocket-reference)
-11. [Companion Mobile App & Documentation](#-companion-mobile-app--documentation)
-12. [Troubleshooting & FAQs](#-troubleshooting--faqs)
+8. [MQTT Topics & Payload Data Contracts](#-mqtt-topics--payload-data-contracts)
+9. [REST API & WebSocket Reference](#-rest-api--websocket-reference)
+10. [Companion Mobile App & Documentation](#-companion-mobile-app--documentation)
+11. [Troubleshooting & FAQs](#-troubleshooting--faqs)
 
 ---
 
 ## 🏛 System Overview & Architecture
 
 CareTrack bridges hardware sensing, secure cloud messaging, real-time backend persistence, and low-latency frontend dashboards:
+
+The backend alert engine implements the paper's Adaptive Multi-Parameter Verification (AMPV) rules. It correlates paired wearable and room readings from a 60-second window and marks combined fall/vital, heart-rate/fever, or fall/no-motion evidence as one verified critical emergency. Single-sensor conditions retain the existing fail-safe alerts.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -47,19 +48,29 @@ CareTrack bridges hardware sensing, secure cloud messaging, real-time backend pe
 │                  FASTAPI BACKEND SERVER                 │
 │  - Paho-MQTT Ingestion Worker (async loop)              │
 │  - Asynchronous DB Retention via PostgreSQL             │
-│  - Real-Time WebSocket Broadcaster (/ws/live) (<1ms)    │
+│  - Alert WebSocket Broadcaster (/ws/live)               │
 │  - REST API (/readings/latest, /health)                 │
 └──────────────┬──────────────────────────┬───────────────┘
                │                          │
-       WebSocket Broadcast         Direct Static Serve
+       Verified Alerts             API / Push Alerts
                ▼                          ▼
 ┌───────────────────────────┐  ┌──────────────────────────┐
 │    LIVE WEB DASHBOARD     │  │   COMPANION MOBILE APP   │
 │ - Unified Patient Monitor │  │ - React Native / Expo    │
-│ - Heart Rate / SpO2 / Temp│  │ - Caregiver Push Alerts  │
+│ - Direct MQTT Live Values │  │ - Caregiver Push Alerts  │
 │ - Ambient Climate & Fall  │  │ - Historical Trends      │
 └───────────────────────────┘  └──────────────────────────┘
 ```
+
+The web dashboard subscribes to HiveMQ over secure WebSockets for low-latency
+room and wearable values. In parallel, the backend consumes the same MQTT
+events for persistence and AMPV evaluation; only its verified alerts are sent
+to the web dashboard over `/ws/live`.
+
+Because Vercel cannot keep the MQTT worker alive between requests, the wearable
+also posts detected falls to `/api/v1/telemetry/ingest`. Open web and mobile
+clients read persisted backend alerts through `/api/v1/alerts/latest`; closed
+mobile apps receive the same backend alert through Expo push notifications.
 
 ---
 
@@ -75,7 +86,6 @@ dhruva/
 ├── backend/                       # FastAPI ingestion engine & API server
 │   ├── main.py                    # Application entry point, MQTT handler, WebSocket manager
 │   ├── schema.sql                 # PostgreSQL relational schema & indexes
-│   ├── simulate_sensors.py        # Python telemetry simulator for hardware-free testing
 │   ├── requirements.txt           # Standard Python dependencies
 │   ├── pyproject.toml / uv.lock   # uv package manager specifications
 │   ├── Pipfile                    # Pipenv configuration
@@ -194,16 +204,7 @@ In **Library Manager** (`Ctrl+Shift+I`), search and install:
 ### Step 3: Flash the Wearable Unit (ESP32)
 
 1. Open [`firmware/wearbale/firmware/firmware.ino`](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino) in Arduino IDE.
-2. Update the credentials at the top of the file:
-   ```cpp
-   #define WIFI_SSID       "YOUR_WIFI_SSID"
-   #define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
-
-   #define MQTT_BROKER_URL "YOUR_HIVEMQ_CLUSTER.s1.eu.hivemq.cloud"
-   #define MQTT_PORT       8883
-   #define MQTT_USERNAME   "YOUR_MQTT_USERNAME"
-   #define MQTT_PASSWORD   "YOUR_MQTT_PASSWORD"
-   ```
+2. Copy `secrets.example.h` beside the sketch as `secrets.h`, then enter the WiFi and MQTT credentials there. `secrets.h` is ignored by Git.
 3. Select Board: **ESP32 Dev Module** (or **DOIT ESP32 DEVKIT V1**).
 4. Connect ESP32 via Micro-USB, select the COM port, and click **Upload**.
 5. Open Serial Monitor at **115200 baud** to verify WiFi & TLS MQTT connection.
@@ -213,16 +214,7 @@ In **Library Manager** (`Ctrl+Shift+I`), search and install:
 ### Step 4: Flash the Room Unit (NodeMCU ESP8266)
 
 1. Open [`firmware/Room-Kit/firmware.ino`](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/Room-Kit/firmware.ino) in Arduino IDE.
-2. Update WiFi & MQTT credentials:
-   ```cpp
-   #define WIFI_SSID       "YOUR_WIFI_SSID"
-   #define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
-
-   #define MQTT_BROKER_URL "YOUR_HIVEMQ_CLUSTER.s1.eu.hivemq.cloud"
-   #define MQTT_PORT       8883
-   #define MQTT_USERNAME   "YOUR_MQTT_USERNAME"
-   #define MQTT_PASSWORD   "YOUR_MQTT_PASSWORD"
-   ```
+2. Copy `secrets.example.h` beside the sketch as `secrets.h`, then enter the WiFi and MQTT credentials there. `secrets.h` is ignored by Git.
 3. Select Board: **NodeMCU 1.0 (ESP-12E Module)**.
 4. Select the COM port, set CPU frequency to **80 MHz**, and click **Upload**.
 5. Open Serial Monitor at **115200 baud**.
@@ -313,6 +305,23 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api`, `/readings` and `/ws` to the backend.
 
+Before the first hardware demo, pair the default room and wearable identifiers to the same patient:
+
+```powershell
+cd backend
+uv run python setup_demo_devices.py
+```
+
+The command is idempotent and refuses to replace an existing active pairing.
+
+### Onboard a Patient
+
+1. Create or sign in with a real **Care Taker** account. The one-click demo login cannot onboard patients.
+2. Open **Patients Directory** and select **+ Add Patient**.
+3. Enter the patient profile, family emergency contact email, and both device IDs.
+
+The backend creates both device pairings and assigns the signed-in caretaker in one transaction. Emergency emails for those devices are then sent to the assigned caretaker and the patient's family contact. Duplicate rooms and devices that are already paired are rejected.
+
 | Route | URL | Description |
 |---|---|---|
 | **Web App** | [http://localhost:5173](http://localhost:5173) | CareTrack patient & room status monitor (login required) |
@@ -322,26 +331,8 @@ Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api`, `/read
 | **OpenAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | Interactive API documentation |
 
 #### Connecting on the Dashboard:
-- The dashboard automatically opens a WebSocket to `ws://localhost:8000/ws/live` and renders telemetry in real time.
-
----
-
-## 🧪 Hardware-Free Testing (Telemetry Simulator)
-
-To verify the entire cloud ingestion, database retention, WebSocket broadcasting, and live UI without plugging in any hardware:
-
-1. Keep the FastAPI backend running in your primary terminal.
-2. Open a second terminal window and run:
-   ```powershell
-   cd c:\Users\HP\Desktop\Office\dhruva\backend
-   python simulate_sensors.py
-   ```
-3. **What happens:**
-   - Every 3 seconds, the simulator publishes real-time data to HiveMQ Cloud.
-   - Ambient room data (temperature, humidity, motion pulses).
-   - Wearable data (heart rate, SpO₂, body temperature, accelerometer readings).
-   - Simulates occasional fall incidents with critical acceleration peaks.
-4. Watch the updates instantly appear on your browser at [http://localhost:5173](http://localhost:5173)!
+- The dashboard reads live telemetry directly from MQTT and uses the backend
+  WebSocket only for verified alerts and warnings.
 
 ---
 

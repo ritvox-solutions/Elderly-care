@@ -30,6 +30,13 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: UserResponse
 
+class PushTokenRequest(BaseModel):
+    token: str = Field(
+        min_length=20,
+        max_length=255,
+        pattern=r"^(Expo(nent)?PushToken)\[[A-Za-z0-9_-]+\]$",
+    )
+
 class PasswordResetRequest(BaseModel):
     email: EmailStr
 

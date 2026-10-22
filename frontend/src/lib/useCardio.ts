@@ -29,8 +29,8 @@ function pick(payload: Record<string, unknown>, key: string): unknown {
   return undefined;
 }
 
-export function useCardio() {
-  const { thresholds } = useApp();
+export function useCardio(onFall?: (magnitude: number, heightM?: number, category?: string) => void) {
+  const { thresholds, selectedPatient } = useApp();
   const [hr, setHr] = useState(0);
   const [spo2, setSpo2] = useState(0);
   const [temp, setTemp] = useState(0);
@@ -150,9 +150,11 @@ export function useCardio() {
   // edits them. Reading it through a ref keeps the MQTT subscription stable so
   // threshold edits do not tear down and re-open the broker connection.
   const runEngineRef = useRef(runEngine);
+  const onFallRef = useRef(onFall);
   useEffect(() => {
     runEngineRef.current = runEngine;
-  }, [runEngine]);
+    onFallRef.current = onFall;
+  }, [runEngine, onFall]);
 
   // Set up the direct broker subscription once, and tear it down on unmount.
   useEffect(() => {
@@ -161,7 +163,7 @@ export function useCardio() {
     try {
       session = connectMqtt({
         label: 'MQTT-CARDIO',
-        topics: [mqttTopicCardiac],
+        topics: [mqttTopicCardiac, `caretrack/${selectedPatient.roomDeviceId}/wearable/motion`],
         onConnect: () => setMqttConn({ text: 'Wearable live', mode: 'live' }),
         onClose: () => setMqttConn({ text: 'Wearable reconnecting…', mode: 'down' }),
         onError: () => setMqttConn({ text: 'Wearable offline', mode: 'down' }),
@@ -174,9 +176,23 @@ export function useCardio() {
             // `pick` handles both shapes.
             const rawHr = Number(pick(data, 'heart_rate') ?? 0);
             const rawSpo2 = Number(pick(data, 'spo2') ?? 0);
-            const rawTemp = data.temp_valid === false
-              ? 0
-              : Number(pick(data, 'body_temp') ?? pick(data, 'temperature') ?? 0);
+            const rawTemp = Number(
+              pick(data, 'device_temperature') ??
+              pick(data, 'body_temp') ??
+              pick(data, 'temperature') ??
+              0
+            );
+            const fallDetected = pick(data, 'fall_detected');
+            if (fallDetected === true || fallDetected === 1 || fallDetected === '1') {
+              const magnitude = Number(pick(data, 'accel_magnitude') ?? 0);
+              const height = Number(pick(data, 'fall_height_m') ?? 0);
+              const category = pick(data, 'fall_category');
+              onFallRef.current?.(
+                Number.isFinite(magnitude) ? magnitude : 0,
+                Number.isFinite(height) && height > 0 ? height : undefined,
+                typeof category === 'string' ? category : undefined,
+              );
+            }
             if (!rawHr && !rawSpo2 && !rawTemp) return;
 
             hasLiveData.current = true;
@@ -207,7 +223,7 @@ export function useCardio() {
     return () => {
       session?.close();
     };
-  }, []);
+  }, [selectedPatient.roomDeviceId]);
 
   return {
     hr,

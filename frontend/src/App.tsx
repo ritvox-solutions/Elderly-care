@@ -39,7 +39,7 @@ function Shell() {
     feedRowRef.current?.('FALL_DETECTED', `${magnitude.toFixed(2)}g (~${estHeight.toFixed(2)}m)`, at);
   }, []);
 
-  const cardio = useCardio();
+  const cardio = useCardio(handleFall);
   const handleBackendAlert = useCallback((alert: WsAlertMessage) => {
     setBackendAlert(alert);
     if (alert.category.toUpperCase() === 'FALL') handleFall(3.8);

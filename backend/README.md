@@ -36,6 +36,8 @@ Or open http://localhost:8000 and enter device_id then Connect.
 * MQTT subscriber subscribes to `caretrack/+/room/environment`, `caretrack/+/room/motion`, `caretrack/+/status`
 * On each message parses device_id, sensor, timestamp, data and stores each metric as a row in `readings`
 * WebSocket `/ws/live` broadcasts new readings to all connected browsers
+* `POST /api/v1/telemetry/ingest` accepts the wearable's reliable fall webhook
+* `GET /api/v1/alerts/latest` lets clients recover alerts across Vercel instances
 * REST `GET /readings/latest?device_id=...` returns latest temp/humidity/motion for initial load
 
 ## Verify

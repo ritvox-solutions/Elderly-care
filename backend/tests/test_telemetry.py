@@ -42,6 +42,25 @@ def test_wearable_cardiac_telemetry():
     assert metrics["spo2"] == 98.5
     assert metrics["accel_magnitude"] == 1.05
 
+
+def test_invalid_wearable_temperature_is_not_body_temperature():
+    event = parse_telemetry(
+        "cardiac/monitor/data",
+        {
+            "device_id": "ESP32-CardiacMonitor",
+            "sensor": "wearable",
+            "data": {
+                "heart_rate": 78,
+                "temperature": 27.3,
+                "temp_valid": False,
+            },
+        },
+    )
+
+    assert event is not None
+    metrics = {reading.metric: reading.value for reading in event.readings}
+    assert metrics == {"heart_rate": 78.0}
+
 def test_fall_detection_event():
     payload = {
         "device_id": "wearable-01",

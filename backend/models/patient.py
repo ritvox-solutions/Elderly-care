@@ -11,6 +11,7 @@ class Patient(Base):
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
+    email = Column(String(255), nullable=True)
     date_of_birth = Column(Date, nullable=False)
     gender = Column(String(50), nullable=True)
     room_number = Column(String(50), nullable=True)

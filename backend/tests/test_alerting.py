@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import uuid
 
 import pytest
 
@@ -25,12 +26,14 @@ from models import (
     NotificationChannel,
     NotificationStatus,
     Patient,
+    PatientThreshold,
     Reading,
     User,
     UserRole,
 )
 from settings import Settings
 from telemetry import parse_telemetry
+from routers.thresholds import get_patient_threshold_dict, PATIENT_THRESHOLDS_CACHE
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +41,15 @@ def clean_cooldowns():
     reset_cooldowns()
     yield
     reset_cooldowns()
+
+
+def test_threshold_lookup_accepts_uuid_patient_id(db_session):
+    patient_id = uuid.uuid4()
+    db_session.add(PatientThreshold(patient_id=str(patient_id), hr_min=61, hr_max=99))
+    db_session.commit()
+    PATIENT_THRESHOLDS_CACHE.pop(str(patient_id), None)
+
+    assert get_patient_threshold_dict(patient_id, db_session)["hr_min"] == 61
 
 
 def fall_event(device_id: str = "wearable-test-01"):
@@ -82,8 +94,11 @@ def scenario(db_session):
     patient = Patient(
         first_name="Eleanor",
         last_name="Vance",
+        email="eleanor.vance@example.com",
         date_of_birth=date(1935, 4, 2),
+        gender="Female",
         room_number="Room 312",
+        medical_notes="Severe osteoporosis and high fall risk",
         emergency_contact_name="Sam Vance",
         emergency_contact_phone="+1-555-0142",
         emergency_contact_email="sam.vance@example.com",
@@ -211,9 +226,22 @@ def test_process_emergency_persists_alert_and_delivers_email(db_session, scenari
     assert note.error_message is None
 
     assert sent["recipients"] == ["nurse.jane@caretrack.org", "sam.vance@example.com"]
-    assert "CRITICAL" in sent["subject"]
-    assert "wearable-test-01" in sent["subject"]
-    assert "Eleanor Vance (Room 312)" in sent["body"]
+    assert sent["subject"] == "URGENT: Possible fall involving Eleanor Vance - Room 312"
+    assert "Dear family member" in sent["body"]
+    assert "listed as an emergency contact" in sent["body"]
+    assert "contact the care facility or the assigned caregiver" in sent["body"]
+    assert "Name: Eleanor Vance" in sent["body"]
+    assert "Age: 91" in sent["body"]
+    assert "Gender: Female" in sent["body"]
+    assert "Room: Room 312" in sent["body"]
+    assert "Patient email: eleanor.vance@example.com" in sent["body"]
+    assert "Medical information: Severe osteoporosis and high fall risk" in sent["body"]
+    assert "Detected: 14 October 2026 at 10:00:00 UTC" in sent["body"]
+    assert "Wearable device: wearable-test-01" in sent["body"]
+    assert "Impact: 3.85 g" in sent["body"]
+    assert "Name: Sam Vance" in sent["body"]
+    assert "Phone: +1-555-0142" in sent["body"]
+    assert "Email: sam.vance@example.com" in sent["body"]
     assert "Fall detected" in sent["body"]
 
     ws_message = alert_message(fall_event(), alert)
@@ -269,6 +297,27 @@ def test_smtp_failure_marks_notification_failed(db_session, scenario, monkeypatc
     assert "connection refused" in note.error_message
 
 
+def test_fall_sends_push_to_registered_caregiver(db_session, scenario, monkeypatch):
+    token = "ExponentPushToken[caregiver_device_123]"
+    scenario["caregiver"].expo_push_token = token
+    db_session.commit()
+    sent = {}
+    monkeypatch.setattr(email_transport, "send_smtp_mail", lambda **kwargs: (True, "sent"))
+    monkeypatch.setattr(
+        "core.alerting.send_expo_push",
+        lambda tokens, **kwargs: sent.update(tokens=tokens, **kwargs) or {token: (True, "ticket-1")},
+    )
+
+    alerts = process_emergency(fall_event(), db=db_session)
+
+    assert sent["tokens"] == [token]
+    assert sent["data"]["type"] == "fall_alert"
+    assert sent["data"]["room_number"] == "Room 312"
+    push_note = db_session.query(Notification).filter(Notification.channel == NotificationChannel.PUSH.value).one()
+    assert push_note.alert_id == alerts[0].id
+    assert push_note.status == NotificationStatus.DELIVERED.value
+
+
 def test_cooldown_suppresses_repeat_falls(db_session, scenario, monkeypatch):
     sends = []
     monkeypatch.setattr(
@@ -283,6 +332,17 @@ def test_cooldown_suppresses_repeat_falls(db_session, scenario, monkeypatch):
     assert second == []
     assert len(sends) == 1
     assert db_session.query(Notification).count() == 1
+
+
+def test_distinct_fall_after_short_cooldown_is_delivered(db_session, scenario, monkeypatch):
+    monkeypatch.setattr(email_transport, "send_smtp_mail", lambda **kwargs: (True, "sent"))
+    ticks = iter((100.0, 111.0))
+    monkeypatch.setattr("core.alerting.time.time", lambda: next(ticks))
+
+    first = process_emergency(fall_event(), db=db_session)
+    second = process_emergency(fall_event(), db=db_session)
+
+    assert len(first) == len(second) == 1
 
 
 def test_unpaired_device_falls_back_to_all_caregivers(db_session, monkeypatch):
@@ -324,7 +384,8 @@ def test_multiple_breaches_batch_into_one_email(db_session, scenario, monkeypatc
     # one Alert row per breach, but a single email per telemetry event
     assert len(alerts) == 2
     assert len(sends) == 1
-    assert "2 emergency alerts" in sends[0]["subject"]
+    assert sends[0]["subject"] == "CareTrack health alert for your family member, Eleanor Vance"
+    assert sends[0]["body"].count("Details:") == 2
     assert db_session.query(Notification).count() == 2
 
 

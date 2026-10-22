@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Patient } from '../lib/types';
 import type { useCardio } from '../lib/useCardio';
 import type { useRoom } from '../lib/useRoom';
@@ -16,6 +17,7 @@ export default function PatientMonitor({
   now,
   patient,
   onBack,
+  onEdit,
 }: {
   room: ReturnType<typeof useRoom>;
   cardio: ReturnType<typeof useCardio>;
@@ -23,7 +25,9 @@ export default function PatientMonitor({
   now: Date;
   patient: Patient;
   onBack: () => void;
+  onEdit: () => void;
 }) {
+  const [showSettings, setShowSettings] = useState(false);
   const statusCls = patient.status === 'CRITICAL' ? 'bad' : patient.status === 'ATTENTION' ? 'warn' : 'ok';
   const statusText =
     patient.status === 'CRITICAL' ? 'High Fall Risk' : patient.status === 'ATTENTION' ? 'Needs Attention' : 'Vitals Stable';
@@ -47,7 +51,44 @@ export default function PatientMonitor({
             {patient.age} yrs • {patient.gender} · {patient.condition}
           </span>
         </div>
+        <button
+          type="button"
+          className="ct-btn-ghost patient-settings-toggle"
+          aria-haspopup="dialog"
+          onClick={() => setShowSettings(true)}
+        >
+          Patient Settings
+        </button>
       </div>
+
+      {showSettings && <div className="patient-settings-modal" onMouseDown={() => setShowSettings(false)}>
+        <section
+          className="patient-settings-card patient-settings-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="patient-settings-title"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="patient-settings-head">
+            <div>
+              <h2 id="patient-settings-title">Patient Settings</h2>
+              <p>Personal details and the family contact used for emergency alerts.</p>
+            </div>
+            <div className="patient-settings-actions">
+              <button type="button" className="ct-btn-ghost" onClick={() => { setShowSettings(false); onEdit(); }}>Edit details</button>
+              <button type="button" className="ct-btn-ghost" onClick={() => setShowSettings(false)}>Close</button>
+            </div>
+          </div>
+          <dl className="patient-settings-grid">
+            <div><dt>Patient email</dt><dd>{patient.email || 'Not provided'}</dd></div>
+            <div><dt>Date of birth</dt><dd>{patient.dateOfBirth || 'Not provided'}</dd></div>
+            <div><dt>Medical notes</dt><dd>{patient.medicalNotes || patient.condition || 'None'}</dd></div>
+            <div><dt>Emergency contact</dt><dd>{patient.emergencyContact?.name || 'Not provided'}</dd></div>
+            <div><dt>Contact phone</dt><dd>{patient.emergencyContact?.phone || 'Not provided'}</dd></div>
+            <div><dt>Contact email</dt><dd>{patient.emergencyContact?.email || 'Not provided'}</dd></div>
+          </dl>
+        </section>
+      </div>}
 
       <div className="patient-monitor-grid">
         {/* LEFT: Room unit telemetry — same UI as the old Room Unit page */}

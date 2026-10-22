@@ -25,11 +25,15 @@ export default function PatientOnboardingForm({
   onCreated,
   onCancel,
   patient,
+  onDelete,
+  deleting = false,
 }: {
   token: string;
   onCreated: (patient: Patient) => void;
   onCancel: () => void;
   patient?: Patient;
+  onDelete?: () => void;
+  deleting?: boolean;
 }) {
   const [form, setForm] = useState<PatientOnboardingInput>(() => patient ? {
     ...EMPTY_FORM,
@@ -91,7 +95,7 @@ export default function PatientOnboardingForm({
         <legend>Family emergency contact</legend>
         <div className="patient-form-grid">
           <label>Full name<input className="ct-input" required value={form.emergency_contact_name} onChange={(e) => update('emergency_contact_name', e.target.value)} /></label>
-          <label>Phone number<input className="ct-input" type="tel" required value={form.emergency_contact_phone} onChange={(e) => update('emergency_contact_phone', e.target.value)} /></label>
+          <label>Phone number<input className="ct-input" type="tel" required minLength={5} value={form.emergency_contact_phone} onChange={(e) => update('emergency_contact_phone', e.target.value)} /></label>
           <label className="patient-form-wide">Email for emergency alerts<input className="ct-input" type="email" required value={form.emergency_contact_email} onChange={(e) => update('emergency_contact_email', e.target.value)} /></label>
         </div>
       </fieldset>
@@ -106,6 +110,7 @@ export default function PatientOnboardingForm({
 
       {error && <div className="auth-error" role="alert">{error}</div>}
       <div className="patient-form-actions">
+        {patient && onDelete && <button type="button" className="ct-btn-danger" disabled={saving || deleting} onClick={onDelete}>{deleting ? 'Deleting...' : 'Delete Patient'}</button>}
         <button type="button" className="ct-btn-ghost" onClick={onCancel}>Cancel</button>
         <button type="submit" className="ct-btn" disabled={saving}>{saving ? 'Saving...' : patient ? 'Save Changes' : 'Add Patient'}</button>
       </div>

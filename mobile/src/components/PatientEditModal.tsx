@@ -3,11 +3,13 @@ import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import type { Patient } from '../types';
 import { theme } from '../theme';
 
-export function PatientEditModal({ patient, saving, onClose, onSave }: {
+export function PatientEditModal({ patient, saving, deleting, onClose, onSave, onDelete }: {
   patient: Patient | null;
   saving: boolean;
+  deleting: boolean;
   onClose: () => void;
   onSave: (patient: Patient) => void;
+  onDelete: (patient: Patient) => void;
 }) {
   const [draft, setDraft] = useState<Patient | null>(patient);
   useEffect(() => setDraft(patient), [patient]);
@@ -38,8 +40,11 @@ export function PatientEditModal({ patient, saving, onClose, onSave }: {
             {field('Family contact email', draft.emergencyContact.email || '', (email) => setDraft({ ...draft, emergencyContact: { ...draft.emergencyContact, email } }), 'email-address')}
           </ScrollView>
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.cancel} onPress={onClose}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.save} disabled={saving} onPress={() => onSave(draft)}><Text style={styles.saveText}>{saving ? 'Saving...' : 'Save'}</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.delete} disabled={saving || deleting} onPress={() => onDelete(draft)}><Text style={styles.deleteText}>{deleting ? 'Deleting...' : 'Delete Patient'}</Text></TouchableOpacity>
+            <View style={styles.secondaryActions}>
+              <TouchableOpacity style={styles.cancel} onPress={onClose}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.save} disabled={saving || deleting} onPress={() => onSave(draft)}><Text style={styles.saveText}>{saving ? 'Saving...' : 'Save'}</Text></TouchableOpacity>
+            </View>
           </View>
         </View>
       </View>
@@ -55,7 +60,10 @@ const styles = StyleSheet.create({
   field: { marginBottom: 12 },
   label: { fontSize: 11, fontWeight: '700', color: theme.text2, marginBottom: 5 },
   input: { borderWidth: 1, borderColor: theme.borderStrong, borderRadius: 8, paddingHorizontal: 11, paddingVertical: 9, color: theme.text },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, paddingTop: 12 },
+  actions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10, paddingTop: 12 },
+  secondaryActions: { flexDirection: 'row', gap: 10 },
+  delete: { borderWidth: 1, borderColor: theme.bad, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10 },
+  deleteText: { color: theme.bad, fontWeight: '800' },
   cancel: { paddingHorizontal: 16, paddingVertical: 10 },
   cancelText: { color: theme.text2, fontWeight: '700' },
   save: { backgroundColor: theme.accent, borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },

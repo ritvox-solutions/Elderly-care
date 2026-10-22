@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { DEMO_PATIENTS, useApp } from '../lib/store';
-import { fetchPatients } from '../lib/api';
+import { deletePatient, fetchPatients } from '../lib/api';
 import type { Patient } from '../lib/types';
 import type { useCardio } from '../lib/useCardio';
 import type { useRoom } from '../lib/useRoom';
@@ -27,6 +27,7 @@ export default function PatientsPage({
   const [viewing, setViewing] = useState<Patient | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [editing, setEditing] = useState<Patient | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [patients, setPatients] = useState<Patient[]>(DEMO_PATIENTS);
 
   useEffect(() => {
@@ -51,35 +52,80 @@ export default function PatientsPage({
     setViewing(patient);
   };
 
+  const handleSaved = (patient: Patient) => {
+    setPatients((current) => editing
+      ? current.map((item) => item.id === patient.id ? patient : item)
+      : [patient, ...current.filter((item) => item.id !== patient.id)]);
+    setSelectedPatient(patient);
+    if (viewing?.id === patient.id) setViewing(patient);
+    setShowOnboarding(false);
+    setEditing(null);
+  };
+
+  const handleDelete = async (patient: Patient) => {
+    if (!authUser?.token || !window.confirm(`Delete ${patient.firstName} ${patient.lastName}? Their historical alerts and readings will be retained.`)) return;
+    setDeletingId(patient.id);
+    try {
+      await deletePatient(patient.id, authUser.token);
+      const remaining = patients.filter((item) => item.id !== patient.id);
+      setPatients(remaining);
+      if (selectedPatient.id === patient.id && remaining[0]) setSelectedPatient(remaining[0]);
+      if (viewing?.id === patient.id) setViewing(null);
+      setEditing(null);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : 'Could not delete patient');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const editModal = editing && authUser?.token ? (
+    <div className="patient-settings-modal" onMouseDown={() => setEditing(null)}>
+      <div
+        className="patient-edit-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Edit ${editing.firstName} ${editing.lastName}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <PatientOnboardingForm
+          token={authUser.token}
+          patient={editing}
+          onCancel={() => setEditing(null)}
+          onCreated={handleSaved}
+          onDelete={() => handleDelete(editing)}
+          deleting={deletingId === editing.id}
+        />
+      </div>
+    </div>
+  ) : null;
+
   // Selected patient's monitor: room unit data (left) + wearable data (right)
   if (viewing) {
     return (
-      <PatientMonitor
-        room={room}
-        cardio={cardio}
-        fall={fall}
-        now={now}
-        patient={viewing}
-        onBack={() => setViewing(null)}
-      />
+      <>
+        <PatientMonitor
+          room={room}
+          cardio={cardio}
+          fall={fall}
+          now={now}
+          patient={viewing}
+          onBack={() => setViewing(null)}
+          onEdit={() => setEditing(viewing)}
+        />
+        {editModal}
+      </>
     );
   }
 
-  if ((showOnboarding || editing) && authUser?.token) {
+  if (showOnboarding && authUser?.token) {
     return (
       <div className="view-section active">
         <PatientOnboardingForm
           token={authUser.token}
           patient={editing || undefined}
           onCancel={() => { setShowOnboarding(false); setEditing(null); }}
-          onCreated={(patient) => {
-            setPatients((current) => editing
-              ? current.map((item) => item.id === patient.id ? patient : item)
-              : [patient, ...current.filter((item) => item.id !== patient.id)]);
-            setSelectedPatient(patient);
-            setShowOnboarding(false);
-            setEditing(null);
-          }}
+          onCreated={handleSaved}
         />
       </div>
     );
@@ -202,6 +248,7 @@ export default function PatientsPage({
           );
         })}
       </div>
+      {editModal}
     </div>
   );
 }

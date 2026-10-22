@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     mqtt_password: str = ""
     mqtt_use_tls: bool | None = None
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000"
+    cors_allowed_origin_regex: str = r"https://.*\.vercel\.app"
     ws_auth_token: str = ""
+    telemetry_ingest_key: str = ""
 
     # Emergency email notifications (fall detection / critical vitals).
     # Leave SMTP_HOST empty to keep the pipeline inert (alerts are still
@@ -33,9 +35,18 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: int = 10
     # Minimum gap between repeated alerts of the same category per device.
     alert_cooldown_seconds: int = 300
+    fall_alert_cooldown_seconds: int = 10
     # Extra addresses always copied on alert emails (comma separated),
     # e.g. a shared ward mailbox: "ward-a@hospital.org, oncall@hospital.org"
     alert_fallback_recipients: str = ""
+
+    # Optional when Expo enhanced push security is enabled.
+    expo_push_access_token: str = ""
+
+    # One-tap demo login is intentionally configurable for non-demo deployments.
+    enable_demo_login: bool = True
+    demo_caregiver_email: str = "caregiver@caretrack.health"
+    demo_caregiver_password: str = "CareTrackDemo123!"
 
     # Security & JWT
     secret_key: str = "caretrack-dev-secret-key-32-bytes-minimum-security-change-in-prod"

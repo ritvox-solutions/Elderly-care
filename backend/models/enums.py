@@ -33,6 +33,7 @@ class AlertStatus(str, enum.Enum):
 class NotificationChannel(str, enum.Enum):
     IN_APP = "IN_APP"
     EMAIL = "EMAIL"
+    PUSH = "PUSH"
     BROWSER = "BROWSER"
 
 class NotificationStatus(str, enum.Enum):

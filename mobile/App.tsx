@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -38,7 +38,14 @@ import { DEMO_PATIENTS } from './src/data/fixtures';
 import { TelemetryChart } from './src/components/TelemetryChart';
 import { FallAlertModal } from './src/components/FallAlertModal';
 import { PatientEditModal } from './src/components/PatientEditModal';
-import { fetchPatients, subscribeToAlerts, updatePatient } from './src/lib/api';
+import {
+  deletePatient,
+  fetchPatients,
+  fetchPatientThresholds,
+  savePatientThresholds,
+  subscribeToAlerts,
+  updatePatient,
+} from './src/lib/api';
 import { subscribeToTelemetry } from './src/lib/mqtt';
 import {
   enableFallPushNotifications,
@@ -83,6 +90,7 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [savingPatient, setSavingPatient] = useState(false);
+  const [deletingPatient, setDeletingPatient] = useState(false);
 
   // Role permissions (safe navigation if currentUser is null)
   const isCaregiver = currentUser?.role === 'CAREGIVER';
@@ -95,6 +103,9 @@ export default function App() {
   const [roomTempMin, setRoomTempMin] = useState('18.0');
   const [roomTempMax, setRoomTempMax] = useState('28.0');
   const [savedToast, setSavedToast] = useState(false);
+  const [thresholdsLoading, setThresholdsLoading] = useState(false);
+  const [thresholdsSaving, setThresholdsSaving] = useState(false);
+  const [thresholdsError, setThresholdsError] = useState<string | null>(null);
 
   // Real-time telemetry data
   const [heartRate, setHeartRate] = useState<number | null>(null);
@@ -131,8 +142,12 @@ export default function App() {
     patientName: 'Patient',
     roomNumber: 'Unknown room',
   });
+  const lastShownFallAt = useRef(0);
 
   const showFallAlert = useCallback((fall: FallDisplay) => {
+    const eventTime = Date.parse(fall.timestamp) || Date.now();
+    if (Math.abs(eventTime - lastShownFallAt.current) < 5000) return;
+    lastShownFallAt.current = eventTime;
     setFallAlert({
       visible: true,
       magnitude: fall.magnitude,
@@ -240,6 +255,32 @@ export default function App() {
   }, [currentUser, patientsReload]);
 
   useEffect(() => {
+    if (!currentUser?.token || !selectedPatient.id) return;
+    let active = true;
+    setThresholdsLoading(true);
+    setThresholdsError(null);
+    fetchPatientThresholds(selectedPatient.id, currentUser.token)
+      .then((values) => {
+        if (!active) return;
+        setHrMin(String(values.hrMin));
+        setHrMax(String(values.hrMax));
+        setSpo2Min(String(values.spo2Min));
+        setFallG(String(values.fallThresholdG));
+        setRoomTempMin(String(values.roomTempMin));
+        setRoomTempMax(String(values.roomTempMax));
+      })
+      .catch((reason) => {
+        if (active) setThresholdsError(reason instanceof Error ? reason.message : 'Could not load patient thresholds.');
+      })
+      .finally(() => {
+        if (active) setThresholdsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.token, selectedPatient.id]);
+
+  useEffect(() => {
     if (!currentUser) return;
     setHeartRate(null);
     setSpo2(null);
@@ -251,14 +292,29 @@ export default function App() {
 
     const roomEnvironment = `caretrack/${selectedPatient.roomDeviceId}/room/environment`;
     const roomMotion = `caretrack/${selectedPatient.roomDeviceId}/room/motion`;
+    const wearableFall = `caretrack/${selectedPatient.roomDeviceId}/wearable/motion`;
     return subscribeToTelemetry({
-      topics: [roomEnvironment, roomMotion, 'cardiac/monitor/data'],
+      topics: [roomEnvironment, roomMotion, wearableFall, 'cardiac/monitor/data'],
       onStatus: (connected, error) => setTelemetryError(error || (connected ? null : 'Reconnecting to sensor broker...')),
       onMessage: (topic, packet) => {
         const data = packet.data && typeof packet.data === 'object'
           ? packet.data as Record<string, unknown>
           : packet;
         const timestamp = typeof packet.timestamp === 'string' ? packet.timestamp : new Date().toISOString();
+        const fallDetected = data.fall_detected === true || data.fall_detected === 1 || data.fall_detected === '1';
+        if (fallDetected) {
+          const magnitude = Number(data.accel_magnitude || 0);
+          showFallAlert({
+            alertId: `mqtt-${selectedPatient.id}-${Date.now()}`,
+            magnitude: Number.isFinite(magnitude) ? magnitude : 0,
+            timestamp,
+            patientName: `${selectedPatient.firstName} ${selectedPatient.lastName}`,
+            roomNumber: selectedPatient.roomNumber,
+            deviceId: selectedPatient.wearableDeviceId,
+            message: 'Fall detected by the wearable. Immediate assistance may be required.',
+          });
+          if (topic === wearableFall) return;
+        }
         if (topic === roomEnvironment) {
           const temperature = Number(data.temperature);
           const roomHumidity = Number(data.humidity);
@@ -276,10 +332,13 @@ export default function App() {
 
         const hr = Number(data.heart_rate);
         const oxygen = Number(data.spo2);
-        const bodyTemp = data.temp_valid === false ? NaN : Number(data.body_temp ?? data.temperature);
+        const rawSensorTemp = data.device_temperature ?? data.temperature ?? data.body_temp ?? data.sensor_temp;
+        const validSensorTemp = Number(rawSensorTemp);
         if (Number.isFinite(hr) && hr > 0) setHeartRate(hr);
         if (Number.isFinite(oxygen) && oxygen > 0) setSpo2(oxygen);
-        if (Number.isFinite(bodyTemp) && bodyTemp > 20 && bodyTemp < 50) setSensorTemp(bodyTemp);
+        if (Number.isFinite(validSensorTemp) && validSensorTemp > 15 && validSensorTemp < 60) {
+          setSensorTemp(validSensorTemp);
+        }
         setWearableTelemetryAt(timestamp);
         if (hr > 0 && oxygen > 0) {
           const t = new Date(timestamp).getTime() || Date.now();
@@ -288,11 +347,12 @@ export default function App() {
             timeStr: new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             heartRate: hr,
             spo2: oxygen,
+            bodyTemp: Number.isFinite(validSensorTemp) && validSensorTemp > 15 && validSensorTemp < 60 ? validSensorTemp : undefined,
           }].slice(-24));
         }
       },
     });
-  }, [currentUser, selectedPatient.roomDeviceId, selectedPatient.wearableDeviceId]);
+  }, [currentUser, selectedPatient, showFallAlert]);
 
   const handleAcknowledgeAlert = (id: string) => {
     setAlerts((prev) =>
@@ -315,9 +375,42 @@ export default function App() {
     if (newRole === 'PATIENT') setCurrentTab('dual');
   };
 
-  const handleSaveThresholds = () => {
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 3000);
+  const handleSaveThresholds = async () => {
+    if (!currentUser?.token) return;
+    const values = {
+      hrMin: Number(hrMin),
+      hrMax: Number(hrMax),
+      spo2Min: Number(spo2Min),
+      fallThresholdG: Number(fallG),
+      roomTempMin: Number(roomTempMin),
+      roomTempMax: Number(roomTempMax),
+    };
+    if (Object.values(values).some((value) => !Number.isFinite(value))) {
+      setThresholdsError('Every threshold must be a valid number.');
+      return;
+    }
+    if (values.hrMin >= values.hrMax || values.roomTempMin >= values.roomTempMax) {
+      setThresholdsError('Minimum values must be lower than maximum values.');
+      return;
+    }
+
+    setThresholdsSaving(true);
+    setThresholdsError(null);
+    try {
+      const saved = await savePatientThresholds(selectedPatient.id, values, currentUser.token);
+      setHrMin(String(saved.hrMin));
+      setHrMax(String(saved.hrMax));
+      setSpo2Min(String(saved.spo2Min));
+      setFallG(String(saved.fallThresholdG));
+      setRoomTempMin(String(saved.roomTempMin));
+      setRoomTempMax(String(saved.roomTempMax));
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 3000);
+    } catch (reason) {
+      setThresholdsError(reason instanceof Error ? reason.message : 'Could not save patient thresholds.');
+    } finally {
+      setThresholdsSaving(false);
+    }
   };
 
   const getTabTitle = (tab: NavTab) => {
@@ -864,6 +957,7 @@ export default function App() {
               wearableUpdatedAt={wearableTelemetryAt}
               error={telemetryError}
               onBack={() => setCurrentTab('patients')}
+              onEdit={isCaregiver ? () => setEditingPatient(selectedPatient) : undefined}
             />
           )}
 
@@ -982,6 +1076,11 @@ export default function App() {
                   </Text>
                 </View>
               )}
+              {thresholdsError && (
+                <View style={[styles.savedToast, { backgroundColor: theme.badBg, borderColor: theme.badBorder }]}>
+                  <Text style={[styles.savedToastText, { color: theme.bad }]}>{thresholdsError}</Text>
+                </View>
+              )}
 
               {/* SENSOR VALUE RANGE / THRESHOLDS (CARE TAKER SPECIAL ACCESS) */}
               <View style={styles.cardContainer}>
@@ -1090,11 +1189,12 @@ export default function App() {
                 {isCaregiver && (
                   <TouchableOpacity
                     style={styles.saveSettingsBtn}
+                    disabled={thresholdsLoading || thresholdsSaving}
                     onPress={handleSaveThresholds}
                   >
                     <Save size={14} color="#ffffff" />
                     <Text style={styles.saveSettingsBtnText}>
-                      Save Alert Generation Thresholds
+                      {thresholdsLoading ? 'Loading Patient Thresholds...' : thresholdsSaving ? 'Saving...' : 'Save Alert Generation Thresholds'}
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -1118,6 +1218,7 @@ export default function App() {
         <PatientEditModal
           patient={editingPatient}
           saving={savingPatient}
+          deleting={deletingPatient}
           onClose={() => setEditingPatient(null)}
           onSave={async (patient) => {
             if (!currentUser?.token) return;
@@ -1132,6 +1233,35 @@ export default function App() {
             } finally {
               setSavingPatient(false);
             }
+          }}
+          onDelete={(patient) => {
+            Alert.alert(
+              'Delete patient?',
+              `${patient.firstName} ${patient.lastName} will be removed from your directory. Historical alerts and readings will be retained.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    if (!currentUser?.token) return;
+                    setDeletingPatient(true);
+                    try {
+                      await deletePatient(patient.id, currentUser.token);
+                      const remaining = patients.filter((item) => item.id !== patient.id);
+                      setPatients(remaining);
+                      if (selectedPatient.id === patient.id && remaining[0]) setSelectedPatient(remaining[0]);
+                      setCurrentTab('patients');
+                      setEditingPatient(null);
+                    } catch (reason) {
+                      Alert.alert('Could not delete patient', reason instanceof Error ? reason.message : 'Please try again.');
+                    } finally {
+                      setDeletingPatient(false);
+                    }
+                  },
+                },
+              ],
+            );
           }}
         />
       </SafeAreaView>

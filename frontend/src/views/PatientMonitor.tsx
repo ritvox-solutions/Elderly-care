@@ -84,7 +84,7 @@ export default function PatientMonitor({
             <div><dt>Date of birth</dt><dd>{patient.dateOfBirth || 'Not provided'}</dd></div>
             <div><dt>Medical notes</dt><dd>{patient.medicalNotes || patient.condition || 'None'}</dd></div>
             <div><dt>Emergency contact</dt><dd>{patient.emergencyContact?.name || 'Not provided'}</dd></div>
-            <div><dt>Contact phone</dt><dd>{patient.emergencyContact?.phone || 'Not provided'}</dd></div>
+            <div><dt>Emergency phone (SIM800L SMS)</dt><dd>{patient.emergencyContact?.phone || 'Not provided'}</dd></div>
             <div><dt>Contact email</dt><dd>{patient.emergencyContact?.email || 'Not provided'}</dd></div>
           </dl>
         </section>

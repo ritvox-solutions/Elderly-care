@@ -129,6 +129,7 @@ dhruva/
 | **HC-SR501 or AM312** | PIR passive infrared room motion sensor | Room Unit |
 | **DHT11 or DHT22** | Ambient room temperature and relative humidity | Room Unit |
 | **Red LED & 220Ω Resistor** | Critical alert status indicator | Wearable |
+| **SIM800L GSM Module** | Autonomous cellular SMS emergency alert transmission | Wearable |
 
 ### 2. Software Tools
 - **Python**: Version `3.11+`
@@ -157,9 +158,26 @@ Both the **MAX30102**, **MPU6050**, and **OLED Display** operate over the shared
 | **OLED SCL** | `GPIO 22` | Shared I2C Clock |
 | **ALERT LED (+)** | `GPIO 2` | Active-high fall/emergency alert LED |
 | **ALERT LED (-)** | `GND` (via 220Ω resistor) | Current limiting resistor |
+| **SIM800L TXD** | `GPIO 16` | ESP32 RX2 (Serial2) |
+| **SIM800L RXD** | `GPIO 17` | ESP32 TX2 (Serial2) |
+| **SIM800L VCC** | `3.7V - 4.2V` (LiPo / Buck) | Dedicated 2A burst power (do NOT power from ESP32 3.3V pin) |
+| **SIM800L GND** | `GND` | Common Ground with ESP32 |
 
 > [!NOTE]
-> MPU6050 uses I2C address `0x68`, OLED uses `0x3C`, and MAX30102 uses `0x57`. They share GPIO 21 and 22 without collision.
+> - MPU6050 uses I2C address `0x68`, OLED uses `0x3C`, and MAX30102 uses `0x57`. They share GPIO 21 and 22 without collision.
+> - **SIM800L Power Requirement**: The SIM800L module draws up to 2A bursts during GSM RF transmission. Power it with a 3.7V LiPo battery or an external DC-DC buck converter adjusted to ~4.0V, with a common ground to the ESP32.
+> - **Dynamic Emergency Phone Synchronization & NVS Flash Persistence**:
+>   - The emergency contact phone number can be changed at any time directly from the **Web Dashboard** (**Patients Directory -> Edit Patient / Onboard Patient**).
+>   - When saved, the backend automatically pushes the updated phone number via MQTT downlink (`caretrack/<device_id>/config`) and publishes to WebSockets.
+>   - On boot or reconnect, the ESP32 wearable queries `GET /api/v1/devices/<device_id>/config` over HTTP.
+>   - The wearable persists the phone number into non-volatile flash memory using `<Preferences.h>`. Even if the ESP32 is powered off or roams outside WiFi range, the latest number is permanently retained for autonomous SIM800L cellular SMS dispatch.
+>   - `#define EMERGENCY_PHONE_NUMBER "+91XXXXXXXXXX"` in `secrets.h` acts as an initial offline fallback prior to dashboard synchronization.
+> - **Serial Monitor Diagnostic Commands** (115200 baud):
+>   - Send `c` or `C`: Print active device configuration (phone number, assigned patient, room number, pairing state, NVS flash status).
+>   - Send `s` or `S`: Trigger a manual test SMS to verify SIM800L cellular network dispatch.
+>   - Send `g` or `G`: Print GSM network status (CSQ signal quality, network registration, operator, battery).
+>   - Send `f` or `F`: Trigger manual fall simulation (dispatches MQTT, HTTP, and cellular emergency SMS).
+>   - Send `m` or `M`: Print real-time MPU6050 3-axis accelerometer and SVM statistics.
 
 ---
 

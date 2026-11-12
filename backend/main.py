@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from database import engine, Base, SessionLocal, get_db
 from models import Alert, Device, DevicePairing, DeviceType, Patient, Reading
 from core.alerting import process_emergency
+from core.device_sync import register_config_publisher
 from routers.auth import router as auth_router
+from routers.devices import router as devices_router
 from routers.thresholds import router as thresholds_router
 from routers.patients import router as patients_router
 from settings import get_settings
@@ -234,6 +236,35 @@ mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 
+def mqtt_config_publisher(device_id: str, config: dict):
+    if not IS_VERCEL:
+        try:
+            payload = json.dumps(config)
+            mqtt_client.publish(f"caretrack/{device_id}/config", payload, qos=1)
+            mqtt_client.publish("cardiac/monitor/config", payload, qos=1)
+            print(f"[MQTT] Published device config to caretrack/{device_id}/config: {payload}")
+        except Exception as e:
+            print(f"[MQTT] Failed to publish config for {device_id}: {e}")
+
+
+def ws_config_publisher(device_id: str, config: dict):
+    if main_loop is not None and manager.active:
+        msg = {
+            "type": "device_config_updated",
+            "device_id": device_id,
+            "config": config,
+        }
+
+        async def do_broadcast():
+            await manager.broadcast(msg)
+
+        asyncio.run_coroutine_threadsafe(do_broadcast(), main_loop)
+
+
+register_config_publisher(mqtt_config_publisher)
+register_config_publisher(ws_config_publisher)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global main_loop
@@ -275,6 +306,7 @@ app.add_middleware(
 
 # Include Authentication Router
 app.include_router(auth_router)
+app.include_router(devices_router)
 app.include_router(thresholds_router)
 app.include_router(patients_router)
 

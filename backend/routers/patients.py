@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from core.dependencies import require_role
+from core.device_sync import broadcast_device_config, get_device_config_payload
 from database import get_db
 from models import (
     CaregiverAssignment,
@@ -141,6 +142,10 @@ def create_patient(
         db.add(DevicePairing(device_id=device.id, patient_id=patient.id, is_active=True))
     db.commit()
     db.refresh(patient)
+    for pairing in patient.device_pairings:
+        if pairing.is_active and pairing.device:
+            config_payload = get_device_config_payload(pairing.device.device_identifier, db)
+            broadcast_device_config(pairing.device.device_identifier, config_payload)
     return _patient_directory_row(patient)
 
 
@@ -179,6 +184,10 @@ def update_patient(
         setattr(patient, field, value)
     db.commit()
     db.refresh(patient)
+    for pairing in patient.device_pairings:
+        if pairing.is_active and pairing.device:
+            config_payload = get_device_config_payload(pairing.device.device_identifier, db)
+            broadcast_device_config(pairing.device.device_identifier, config_payload)
     return _patient_directory_row(patient)
 
 
@@ -200,9 +209,13 @@ def delete_patient(
         raise HTTPException(status_code=403, detail="Patient is not assigned to this caregiver")
 
     patient.is_active = False
+    device_identifiers = [pairing.device.device_identifier for pairing in patient.device_pairings if pairing.device]
     for pairing in patient.device_pairings:
         pairing.is_active = False
         pairing.unpaired_at = datetime.now(timezone.utc)
         pairing.device.status = DeviceStatus.UNPAIRED.value
     db.commit()
+    for identifier in device_identifiers:
+        payload = get_device_config_payload(identifier, db)
+        broadcast_device_config(identifier, payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

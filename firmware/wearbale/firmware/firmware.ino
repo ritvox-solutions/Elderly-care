@@ -1,13 +1,14 @@
 /*
  * Wearable Cardiac Risk & Fall Detection Monitor - ESP32
- * MAX30100/MAX30102 + Adafruit MPU-6050 + SH1106/SSD1306 OLED + HiveMQ Cloud MQTT
- * Pinout: SDA=GPIO21, SCL=GPIO22, ALERT_LED=GPIO2
+ * MAX30100/MAX30102 + Adafruit MPU-6050 + SH1106/SSD1306 OLED + HiveMQ Cloud MQTT + SIM800L GSM SMS
+ * Pinout: SDA=GPIO21, SCL=GPIO22, ALERT_LED=GPIO2, SIM800_RX=GPIO16, SIM800_TX=GPIO17
  */
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include "MAX30105.h"
 #include "heartRate.h"
@@ -26,6 +27,9 @@ const char* MQTT_TOPIC     = "cardiac/monitor/data";
 #ifndef ALERT_INGEST_URL
 #define ALERT_INGEST_URL "https://elderly-care-api.vercel.app/api/v1/telemetry/ingest"
 #endif
+#ifndef DEVICE_CONFIG_URL
+#define DEVICE_CONFIG_URL "https://elderly-care-api.vercel.app/api/v1/devices/"
+#endif
 #ifndef TELEMETRY_INGEST_KEY
 #define TELEMETRY_INGEST_KEY ""
 #endif
@@ -37,6 +41,25 @@ const char* MQTT_TOPIC     = "cardiac/monitor/data";
 #define OLED_ADDR       0x3C
 #define OLED_WIDTH      128
 #define OLED_HEIGHT     64
+
+// SIM800L GSM SMS Configuration (ESP32 UART2 / Serial2)
+#ifndef SIM800_RX_PIN
+#define SIM800_RX_PIN   16  // ESP32 RX2 (connects to SIM800L TXD)
+#endif
+#ifndef SIM800_TX_PIN
+#define SIM800_TX_PIN   17  // ESP32 TX2 (connects to SIM800L RXD)
+#endif
+#ifndef SIM800_RST_PIN
+#define SIM800_RST_PIN  -1  // Optional reset pin (-1 if unused)
+#endif
+#ifndef SIM800_BAUD
+#define SIM800_BAUD     9600
+#endif
+#ifndef EMERGENCY_PHONE_NUMBER
+#define EMERGENCY_PHONE_NUMBER "+1234567890"
+#endif
+
+#define SIM800_SERIAL   Serial2
 
 // Clinical & Sensor Constants
 static const uint32_t REPORT_INTERVAL_MS = 1000;
@@ -87,6 +110,19 @@ Adafruit_MPU6050 mpu;
 MAX30105 sensor;
 
 bool mpuReady = false, isMAX30100 = false, oledReady = false, sensorReady = false;
+bool sim800Ready = false, sim800NetRegistered = false, lastSmsSuccess = false;
+int  sim800SignalCsq = 0;
+uint32_t lastSmsSentMs = 0;
+static const uint32_t SMS_COOLDOWN_MS = 30000; // 30s minimum between emergency SMS
+
+// Dynamic Device Configuration (Synchronized from Web Dashboard & Persisted in NVS Flash)
+Preferences preferences;
+char activeEmergencyPhone[32] = {0};
+char assignedPatientName[48]  = "Unassigned";
+char assignedRoomNumber[32]   = "N/A";
+bool deviceIsPaired           = false;
+uint32_t lastConfigSyncMs     = 0;
+static const uint32_t CONFIG_SYNC_INTERVAL_MS = 300000; // 5 min periodic sync
 float currentAx = 0, currentAy = 0, currentAz = 1, currentSVM = 1.0f;
 bool fallAlertActive = false; // indicates if fall alert is active
 bool fallTelemetrySent = false; // ensures fall alert sent only once per event
@@ -141,8 +177,25 @@ T medianVal(const T *arr, uint8_t n) {
 }
 
 void queueTelemetry(int hr, float spo2, float pi, bool low, bool fall, float accel, float fallHeight = 0.0f, uint16_t fallDuration = 0) {
+  if (readingQueue == nullptr) return;
   Reading r = {hr, spo2, pi, low, fall, accel, fallHeight, fallDuration, millis()};
-  xQueueOverwrite(readingQueue, &r);
+
+  if (fall) {
+    // Critical fall emergency: send immediately to front of queue
+    xQueueSendToFront(readingQueue, &r, 0);
+  } else {
+    // If queue holds a pending fall alert, do not drop or crowd it
+    Reading pending;
+    if (xQueuePeek(readingQueue, &pending, 0) == pdTRUE && pending.fallDetected) {
+      return;
+    }
+    // If queue is full, discard the oldest routine sample to make room
+    if (uxQueueSpacesAvailable(readingQueue) == 0) {
+      Reading dummy;
+      xQueueReceive(readingQueue, &dummy, 0);
+    }
+    xQueueSend(readingQueue, &r, 0);
+  }
 }
 
 uint8_t readReg8(uint8_t reg) {
@@ -182,6 +235,206 @@ void autoRangeLed(uint32_t meanIr, bool fingerPresent) {
     applyLed();
     Serial.printf("[Sensor] Auto-range LED: 0x%02X\n", ledCurrent);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Device Configuration & NVS Flash Persistence
+// ---------------------------------------------------------------------------
+bool extractJsonString(const String& json, const char* key, char* outVal, size_t maxLen) {
+  String searchKey = String("\"") + key + "\"";
+  int keyIdx = json.indexOf(searchKey);
+  if (keyIdx == -1) return false;
+  int colonIdx = json.indexOf(':', keyIdx + searchKey.length());
+  if (colonIdx == -1) return false;
+
+  int valStart = colonIdx + 1;
+  while (valStart < (int)json.length() && (json[valStart] == ' ' || json[valStart] == '\t' || json[valStart] == '\r' || json[valStart] == '\n')) {
+    valStart++;
+  }
+  if (valStart >= (int)json.length() || json[valStart] != '\"') return false;
+
+  int firstQuote = valStart;
+  int secondQuote = json.indexOf('\"', firstQuote + 1);
+  if (secondQuote == -1) return false;
+
+  String val = json.substring(firstQuote + 1, secondQuote);
+  val.trim();
+  if (val.length() == 0 || val == "null") return false;
+  strncpy(outVal, val.c_str(), maxLen - 1);
+  outVal[maxLen - 1] = '\0';
+  return true;
+}
+
+bool extractJsonBool(const String& json, const char* key, bool defaultVal = false) {
+  String searchKey = String("\"") + key + "\"";
+  int keyIdx = json.indexOf(searchKey);
+  if (keyIdx == -1) return defaultVal;
+  int colonIdx = json.indexOf(':', keyIdx + searchKey.length());
+  if (colonIdx == -1) return defaultVal;
+  int commaIdx = json.indexOf(',', colonIdx);
+  int braceIdx = json.indexOf('}', colonIdx);
+  int endIdx = (commaIdx != -1 && commaIdx < braceIdx) ? commaIdx : braceIdx;
+  if (endIdx == -1) endIdx = json.length();
+  String val = json.substring(colonIdx + 1, endIdx);
+  val.trim();
+  if (val.startsWith("true") || val.startsWith("1")) return true;
+  if (val.startsWith("false") || val.startsWith("0")) return false;
+  return defaultVal;
+}
+
+void loadConfigFromNVS() {
+  preferences.begin("caretrack", true); // read-only mode
+  String phone = preferences.getString("phone", EMERGENCY_PHONE_NUMBER);
+  String pName = preferences.getString("patient", "Unassigned");
+  String room  = preferences.getString("room", "N/A");
+  bool paired  = preferences.getBool("paired", false);
+  preferences.end();
+
+  strncpy(activeEmergencyPhone, phone.c_str(), sizeof(activeEmergencyPhone) - 1);
+  activeEmergencyPhone[sizeof(activeEmergencyPhone) - 1] = '\0';
+
+  strncpy(assignedPatientName, pName.c_str(), sizeof(assignedPatientName) - 1);
+  assignedPatientName[sizeof(assignedPatientName) - 1] = '\0';
+
+  strncpy(assignedRoomNumber, room.c_str(), sizeof(assignedRoomNumber) - 1);
+  assignedRoomNumber[sizeof(assignedRoomNumber) - 1] = '\0';
+
+  deviceIsPaired = paired;
+
+  Serial.printf("\n[Config] 📂 Loaded configuration from NVS Flash:\n");
+  Serial.printf("         Emergency Phone : %s\n", activeEmergencyPhone);
+  Serial.printf("         Patient Name    : %s\n", assignedPatientName);
+  Serial.printf("         Room Number     : %s\n", assignedRoomNumber);
+  Serial.printf("         Pairing Status  : %s\n", deviceIsPaired ? "PAIRED" : "UNPAIRED");
+}
+
+bool saveEmergencyPhoneToNVS(const char* newPhone) {
+  if (!newPhone || strlen(newPhone) < 5) return false;
+  if (strcmp(activeEmergencyPhone, newPhone) == 0) return true;
+
+  preferences.begin("caretrack", false); // read-write
+  size_t bytes = preferences.putString("phone", newPhone);
+  preferences.end();
+
+  if (bytes > 0) {
+    strncpy(activeEmergencyPhone, newPhone, sizeof(activeEmergencyPhone) - 1);
+    activeEmergencyPhone[sizeof(activeEmergencyPhone) - 1] = '\0';
+    Serial.printf("[Config] 💾 Stored new Emergency Phone in NVS Flash: %s\n", activeEmergencyPhone);
+    return true;
+  }
+  return false;
+}
+
+void savePatientInfoToNVS(const char* pName, const char* room, bool paired) {
+  preferences.begin("caretrack", false);
+  if (pName && strlen(pName) > 0) {
+    preferences.putString("patient", pName);
+    strncpy(assignedPatientName, pName, sizeof(assignedPatientName) - 1);
+    assignedPatientName[sizeof(assignedPatientName) - 1] = '\0';
+  }
+  if (room && strlen(room) > 0) {
+    preferences.putString("room", room);
+    strncpy(assignedRoomNumber, room, sizeof(assignedRoomNumber) - 1);
+    assignedRoomNumber[sizeof(assignedRoomNumber) - 1] = '\0';
+  }
+  preferences.putBool("paired", paired);
+  deviceIsPaired = paired;
+  preferences.end();
+}
+
+bool fetchDeviceConfigHttp() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(7000);
+
+  String url = String(DEVICE_CONFIG_URL);
+  if (!url.endsWith("/")) url += "/";
+  url += String(MQTT_CLIENT_ID) + "/config";
+
+  Serial.printf("\n[Config HTTP] Fetching device config from: %s ...\n", url.c_str());
+  if (!http.begin(client, url)) {
+    Serial.println("[Config HTTP] ❌ Connection failed.");
+    return false;
+  }
+
+  if (strlen(TELEMETRY_INGEST_KEY) > 0) {
+    http.addHeader("X-Telemetry-Key", TELEMETRY_INGEST_KEY);
+  }
+
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    Serial.printf("[Config HTTP] ✅ Received: %s\n", payload.c_str());
+
+    char newPhone[32] = {0};
+    if (extractJsonString(payload, "emergency_phone", newPhone, sizeof(newPhone))) {
+      if (strlen(newPhone) >= 5 && strcmp(newPhone, activeEmergencyPhone) != 0) {
+        Serial.printf("[Config HTTP] 🔄 Updated Emergency Phone: %s -> %s\n",
+                      activeEmergencyPhone, newPhone);
+        saveEmergencyPhoneToNVS(newPhone);
+      } else {
+        Serial.printf("[Config HTTP] Emergency Phone is current (%s).\n", activeEmergencyPhone);
+      }
+    }
+
+    char newPatient[48] = {0};
+    char newRoom[32] = {0};
+    extractJsonString(payload, "patient_name", newPatient, sizeof(newPatient));
+    extractJsonString(payload, "room_number", newRoom, sizeof(newRoom));
+    bool paired = extractJsonBool(payload, "paired", false);
+    savePatientInfoToNVS(newPatient, newRoom, paired);
+
+    http.end();
+    return true;
+  } else if (httpCode == 404) {
+    Serial.printf("[Config HTTP] ℹ️ Cloud API returned 404 (not yet deployed on cloud; retaining active phone: %s)\n", activeEmergencyPhone);
+    http.end();
+    return false;
+  } else {
+    Serial.printf("[Config HTTP] ⚠️ GET returned code %d\n", httpCode);
+    http.end();
+    return false;
+  }
+}
+
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+  if (length == 0 || length > 1024) return;
+  char msg[1025];
+  memcpy(msg, payload, length);
+  msg[length] = '\0';
+  String jsonStr = String(msg);
+  Serial.printf("\n[MQTT Config] 📩 Downlink message on '%s': %s\n", topic, msg);
+
+  char newPhone[32] = {0};
+  if (extractJsonString(jsonStr, "emergency_phone", newPhone, sizeof(newPhone))) {
+    if (strlen(newPhone) >= 5 && strcmp(newPhone, activeEmergencyPhone) != 0) {
+      Serial.printf("[Config MQTT] 🔄 Updated Emergency Phone from Dashboard: %s -> %s\n",
+                    activeEmergencyPhone, newPhone);
+      saveEmergencyPhoneToNVS(newPhone);
+    }
+  }
+
+  char newPatient[48] = {0};
+  char newRoom[32] = {0};
+  extractJsonString(jsonStr, "patient_name", newPatient, sizeof(newPatient));
+  extractJsonString(jsonStr, "room_number", newRoom, sizeof(newRoom));
+  bool paired = extractJsonBool(jsonStr, "paired", deviceIsPaired);
+  savePatientInfoToNVS(newPatient, newRoom, paired);
+}
+
+void printDeviceConfig() {
+  Serial.println("\n--- [CareTrack Wearable Active Configuration] ---");
+  Serial.printf(" Device ID        : %s\n", MQTT_CLIENT_ID);
+  Serial.printf(" Pairing Status   : %s\n", deviceIsPaired ? "PAIRED" : "UNPAIRED");
+  Serial.printf(" Assigned Patient : %s\n", assignedPatientName);
+  Serial.printf(" Assigned Room    : %s\n", assignedRoomNumber);
+  Serial.printf(" Active SMS Phone : %s\n", strlen(activeEmergencyPhone) ? activeEmergencyPhone : "Unset");
+  Serial.printf(" Fallback Phone   : %s\n", EMERGENCY_PHONE_NUMBER);
+  Serial.printf(" SIM800L Module   : %s | Signal CSQ: %d/31\n", sim800Ready ? "READY" : "OFFLINE", sim800SignalCsq);
+  Serial.println("-------------------------------------------------");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,9 +480,15 @@ void maintainNetwork() {
   if (millis() - lastMqttRetryMs < 4000) return;
   lastMqttRetryMs = millis();
   Serial.print("[MQTT TLS] Connecting to HiveMQ Cloud...");
+  mqttClient.setCallback(onMqttMessage);
   if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
     Serial.println(" Connected securely!");
     netMqttUp = true;
+    char cfgTopic[64];
+    snprintf(cfgTopic, sizeof(cfgTopic), "caretrack/%s/config", MQTT_CLIENT_ID);
+    mqttClient.subscribe(cfgTopic);
+    mqttClient.subscribe("cardiac/monitor/config");
+    Serial.printf("[MQTT] Subscribed to configuration topic '%s'\n", cfgTopic);
   } else {
     Serial.printf(" Failed (rc=%d)\n", mqttClient.state());
   }
@@ -237,30 +496,318 @@ void maintainNetwork() {
 
 bool postFallToBackend(const char* payload) {
   if (WiFi.status() != WL_CONNECTED) return false;
-  for (uint8_t attempt = 1; attempt <= 3; ++attempt) {
-    WiFiClientSecure alertClient;
-    alertClient.setInsecure();
-    HTTPClient http;
-    http.setTimeout(7000);
-    if (!http.begin(alertClient, ALERT_INGEST_URL)) return false;
-    http.addHeader("Content-Type", "application/json");
-    if (strlen(TELEMETRY_INGEST_KEY)) http.addHeader("X-Telemetry-Key", TELEMETRY_INGEST_KEY);
-    int status = http.POST((uint8_t*)payload, strlen(payload));
-    http.end();
-    if (status >= 200 && status < 300) {
-      Serial.printf("[Backend Alert] Delivered (HTTP %d)\n", status);
-      return true;
-    }
-    Serial.printf("[Backend Alert] Attempt %u failed (HTTP %d)\n", attempt, status);
-    delay(500);
+  // If MQTT is connected, real-time alert was already dispatched to HiveMQ Cloud
+  if (mqttClient.connected()) return true;
+
+  // Fallback to HTTP Webhook if MQTT is down
+  WiFiClientSecure alertClient;
+  alertClient.setInsecure();
+  HTTPClient http;
+  http.setTimeout(2500);
+  if (!http.begin(alertClient, ALERT_INGEST_URL)) return false;
+  http.addHeader("Content-Type", "application/json");
+  if (strlen(TELEMETRY_INGEST_KEY)) http.addHeader("X-Telemetry-Key", TELEMETRY_INGEST_KEY);
+  int status = http.POST((uint8_t*)payload, strlen(payload));
+  http.end();
+  if (status >= 200 && status < 300) {
+    Serial.printf("[Backend Alert] Delivered via HTTP fallback (%d)\n", status);
+    return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// SIM800L GSM SMS Module Driver
+// ---------------------------------------------------------------------------
+bool sim800SendCommand(const String& cmd, const char* expected, uint32_t timeoutMs = 2000, String* outResponse = nullptr) {
+  while (SIM800_SERIAL.available()) {
+    SIM800_SERIAL.read();
+  }
+  SIM800_SERIAL.println(cmd);
+
+  String response = "";
+  uint32_t startMs = millis();
+  while (millis() - startMs < timeoutMs) {
+    while (SIM800_SERIAL.available()) {
+      char c = (char)SIM800_SERIAL.read();
+      response += c;
+    }
+    if (expected != nullptr && response.indexOf(expected) != -1) {
+      if (outResponse) *outResponse = response;
+      return true;
+    }
+    delay(10);
+  }
+
+  if (outResponse) *outResponse = response;
+  return (expected == nullptr);
+}
+
+bool setupSIM800() {
+  Serial.printf("\n[SIM800] Initializing on UART2 (RX=GPIO%d, TX=GPIO%d) @ %d baud...\n",
+                SIM800_RX_PIN, SIM800_TX_PIN, SIM800_BAUD);
+
+  SIM800_SERIAL.begin(SIM800_BAUD, SERIAL_8N1, SIM800_RX_PIN, SIM800_TX_PIN);
+
+  if (SIM800_RST_PIN != -1) {
+    pinMode(SIM800_RST_PIN, OUTPUT);
+    digitalWrite(SIM800_RST_PIN, LOW);
+    delay(100);
+    digitalWrite(SIM800_RST_PIN, HIGH);
+    delay(2000);
+  }
+
+  // Probe module with AT command (up to 5 attempts to sync autobaud)
+  bool responding = false;
+  for (uint8_t i = 0; i < 5; i++) {
+    if (sim800SendCommand("AT", "OK", 1000)) {
+      responding = true;
+      break;
+    }
+    delay(300);
+  }
+
+  if (!responding) {
+    Serial.println("[SIM800] ⚠️ Module not responding. Continuing (ensure 3.7V-4.2V/2A power & TX/RX connected).");
+    sim800Ready = false;
+    return false;
+  }
+
+  sim800Ready = true;
+  sim800SendCommand("ATE0", "OK", 1000);            // Echo off
+  sim800SendCommand("AT+CMEE=2", "OK", 1000);        // Verbose error reporting (CMS/CME error messages)
+  sim800SendCommand("AT+CMGF=1", "OK", 1000);        // Text mode for SMS
+  sim800SendCommand("AT+CSCS=\"GSM\"", "OK", 1000); // Standard GSM character set
+
+  // Check network registration (AT+CREG?)
+  String regResp;
+  sim800SendCommand("AT+CREG?", "OK", 1500, &regResp);
+  if (regResp.indexOf(",1") != -1 || regResp.indexOf(",5") != -1) {
+    sim800NetRegistered = true;
+  }
+
+  // Check signal quality (AT+CSQ)
+  String csqResp;
+  sim800SendCommand("AT+CSQ", "OK", 1000, &csqResp);
+  int csqIdx = csqResp.indexOf("+CSQ: ");
+  if (csqIdx != -1) {
+    sim800SignalCsq = csqResp.substring(csqIdx + 6, csqResp.indexOf(",", csqIdx)).toInt();
+  }
+
+  Serial.printf("[SIM800] ✅ Ready! Registration: %s | Signal CSQ: %d/31\n",
+                sim800NetRegistered ? "OK (Home/Roaming)" : "Searching...", sim800SignalCsq);
+  return true;
+}
+
+bool sendSMS(const char* phoneNumber, const char* message) {
+  if (!phoneNumber || strlen(phoneNumber) < 4) {
+    Serial.println("[SIM800] ⚠️ Cannot send SMS: Invalid or empty EMERGENCY_PHONE_NUMBER (check secrets.h).");
+    return false;
+  }
+
+  // Sanitize phone number (strip whitespace, hyphens, and formatting)
+  char cleanPhone[32] = {0};
+  int cIdx = 0;
+  for (int i = 0; phoneNumber[i] != '\0' && cIdx < 31; i++) {
+    char ch = phoneNumber[i];
+    if (ch == '+' || (ch >= '0' && ch <= '9')) {
+      cleanPhone[cIdx++] = ch;
+    }
+  }
+  cleanPhone[cIdx] = '\0';
+  if (strlen(cleanPhone) < 5) {
+    Serial.printf("[SIM800] ⚠️ Invalid phone number: '%s'\n", phoneNumber);
+    return false;
+  }
+
+  if (!sim800Ready) {
+    if (!setupSIM800()) {
+      Serial.println("[SIM800] ⚠️ Cannot send SMS: SIM800 module offline or not responding.");
+      return false;
+    }
+  }
+
+  uint32_t now = millis();
+  if (lastSmsSentMs != 0 && (now - lastSmsSentMs < SMS_COOLDOWN_MS)) {
+    Serial.printf("[SIM800] ⏳ SMS suppressed by cooldown (%u s remaining)\n",
+                  (unsigned int)((SMS_COOLDOWN_MS - (now - lastSmsSentMs)) / 1000));
+    return false;
+  }
+
+  Serial.printf("\n[SIM800] 📤 Sending Emergency SMS to: %s\n", cleanPhone);
+  Serial.printf("[SIM800] Content: \"%s\"\n", message);
+
+  // Quick check if cellular network registered
+  String regResp;
+  sim800SendCommand("AT+CREG?", "OK", 1000, &regResp);
+  if (regResp.indexOf(",1") == -1 && regResp.indexOf(",5") == -1) {
+    Serial.println("[SIM800] ⏳ Cellular network registration is still in progress (Searching...). Wait 5-10s until registered (type 'g' to check), then retry.");
+    return false;
+  }
+
+  // Ensure SMS text mode
+  if (!sim800SendCommand("AT+CMGF=1", "OK", 1500)) {
+    Serial.println("[SIM800] ❌ Failed to set SMS text mode.");
+    return false;
+  }
+
+  // Flush buffer
+  while (SIM800_SERIAL.available()) SIM800_SERIAL.read();
+
+  // Send AT+CMGS="<cleanPhone>"
+  String cmgsCmd = String("AT+CMGS=\"") + cleanPhone + "\"";
+  SIM800_SERIAL.println(cmgsCmd);
+
+  // Wait for '>' prompt
+  bool gotPrompt = false;
+  uint32_t promptStart = millis();
+  while (millis() - promptStart < 3000) {
+    if (SIM800_SERIAL.available()) {
+      char c = (char)SIM800_SERIAL.read();
+      if (c == '>') {
+        gotPrompt = true;
+        break;
+      }
+    }
+    delay(10);
+  }
+
+  if (!gotPrompt) {
+    Serial.println("[SIM800] ❌ Did not receive '>' prompt from module.");
+    SIM800_SERIAL.write(0x1B); // Send ESC to cancel CMGS
+    return false;
+  }
+
+  // Send message body and terminate with Ctrl+Z (ASCII 26)
+  SIM800_SERIAL.print(message);
+  SIM800_SERIAL.write(0x1A);
+
+  // Wait for +CMGS: or OK (network dispatch timeout up to 15 seconds)
+  String sendResp = "";
+  uint32_t sendStart = millis();
+  bool sent = false;
+  while (millis() - sendStart < 15000) {
+    while (SIM800_SERIAL.available()) {
+      char c = (char)SIM800_SERIAL.read();
+      sendResp += c;
+    }
+    if (sendResp.indexOf("+CMGS:") != -1 || sendResp.indexOf("OK") != -1) {
+      sent = true;
+      break;
+    }
+    if (sendResp.indexOf("ERROR") != -1) {
+      break;
+    }
+    delay(50);
+  }
+
+  if (sent) {
+    lastSmsSentMs = millis();
+    lastSmsSuccess = true;
+    Serial.println("[SIM800] 🎉 Emergency SMS successfully dispatched via GSM cellular network!");
+    return true;
+  } else {
+    lastSmsSuccess = false;
+    Serial.printf("[SIM800] ❌ SMS transmission failed or timed out. Response: %s\n", sendResp.c_str());
+    return false;
+  }
+}
+
+void dispatchFallSMS(float impactG, float heightM, const char* category, int hr, int spo2) {
+  const char* phone = (strlen(activeEmergencyPhone) >= 5) ? activeEmergencyPhone : EMERGENCY_PHONE_NUMBER;
+  if (!phone || strlen(phone) < 4 || strcmp(phone, "+1234567890") == 0) {
+    Serial.println("[SIM800] ⚠️ No active Emergency Phone configured on Dashboard or secrets.h; skipping SMS.");
+    return;
+  }
+
+  char smsBody[160];
+  if (deviceIsPaired && strlen(assignedPatientName) > 0 && strcmp(assignedPatientName, "Unassigned") != 0) {
+    snprintf(smsBody, sizeof(smsBody),
+             "CareTrack ALERT: Fall detected for %s (%s)! Impact: %.1fg. Vitals: %d bpm, %d%% SpO2. Immediate help needed!",
+             assignedPatientName, assignedRoomNumber, impactG,
+             hr > 0 ? hr : 80, spo2 > 0 ? spo2 : 95);
+  } else {
+    snprintf(smsBody, sizeof(smsBody),
+             "CareTrack ALERT: Fall detected! Impact: %.1fg (~%.2fm, %s). Vitals: HR %d bpm, SpO2 %d%%. Immediate assistance needed!",
+             impactG, heightM, (category && strlen(category)) ? category : "Standing",
+             hr > 0 ? hr : 80, spo2 > 0 ? spo2 : 95);
+  }
+
+  sendSMS(phone, smsBody);
+}
+
+void triggerTestSMS() {
+  const char* phone = (strlen(activeEmergencyPhone) >= 5) ? activeEmergencyPhone : EMERGENCY_PHONE_NUMBER;
+  if (!phone || strlen(phone) < 4) {
+    Serial.println("[SIM800] ⚠️ Please set Emergency Contact Phone on Dashboard or secrets.h first!");
+    return;
+  }
+  char smsBody[160];
+  snprintf(smsBody, sizeof(smsBody),
+           "CareTrack TEST: Wearable SIM800L module online. Target: %s. Patient: %s (%s). CSQ: %d/31.",
+           phone, assignedPatientName, assignedRoomNumber, sim800SignalCsq);
+  sendSMS(phone, smsBody);
+}
+
+void printSIM800Status() {
+  Serial.println("\n--- [SIM800L GSM Status] ---");
+  if (!sim800Ready) {
+    Serial.println("  Status: NOT INITIALIZED / NO RESPONSE");
+    Serial.println("  Attempting initialization now...");
+    setupSIM800();
+    return;
+  }
+  String resp;
+  sim800SendCommand("AT+CSQ", "OK", 1000, &resp);
+  Serial.printf("  Signal (CSQ): %s", resp.c_str());
+  sim800SendCommand("AT+CREG?", "OK", 1000, &resp);
+  Serial.printf("  Registration: %s", resp.c_str());
+  sim800SendCommand("AT+COPS?", "OK", 1500, &resp);
+  Serial.printf("  Operator: %s", resp.c_str());
+  sim800SendCommand("AT+CBC", "OK", 1000, &resp);
+  Serial.printf("  Battery (CBC): %s", resp.c_str());
+  sim800SendCommand("AT+CCID", "OK", 1000, &resp);
+  Serial.printf("  SIM Card ID (ICCID): %s", resp.c_str());
+  sim800SendCommand("AT+CNUM", "OK", 1000, &resp);
+  Serial.printf("  SIM Stored Number (CNUM): %s", resp.c_str());
+  Serial.println("----------------------------\n");
+}
+
+void triggerTestCall() {
+  const char* phone = (strlen(activeEmergencyPhone) >= 5) ? activeEmergencyPhone : EMERGENCY_PHONE_NUMBER;
+  if (!phone || strlen(phone) < 4) {
+    Serial.println("[SIM800] ⚠️ Please set Emergency Contact Phone first!");
+    return;
+  }
+  Serial.printf("\n[SIM800] 📞 Calling %s for 15 seconds to reveal SIM number on Caller ID...\n", phone);
+  String dialCmd = String("ATD") + phone + ";";
+  sim800SendCommand(dialCmd, "OK", 3000);
+  for (int i = 15; i > 0; i--) {
+    Serial.printf("[SIM800] 📞 Ringing %s... (%d sec remaining - check your phone's screen!)\n", phone, i);
+    delay(1000);
+  }
+  Serial.println("[SIM800] 📴 Hanging up test call...");
+  sim800SendCommand("ATH", "OK", 2000);
+  Serial.println("[SIM800] Call ended. Check your mobile phone screen or missed call log for the SIM number!\n");
+}
+
+void checkSIMNumberUSSD() {
+  Serial.println("\n[SIM800] 🔍 Checking SIM card number and identity...");
+  String resp;
+  sim800SendCommand("AT+CNUM", "OK", 1500, &resp);
+  Serial.printf("[SIM800] AT+CNUM Result: %s\n", resp.c_str());
+  sim800SendCommand("AT+CCID", "OK", 1500, &resp);
+  Serial.printf("[SIM800] SIM ICCID Serial: %s\n", resp.c_str());
+  Serial.println("[SIM800] Querying operator USSD (*282# for Airtel, *199# for Vi)...");
+  sim800SendCommand("AT+CUSD=1,\"*282#\",15", "OK", 6000, &resp);
+  if (resp.length() > 5) Serial.printf("[SIM800] Airtel USSD Response:\n%s\n", resp.c_str());
+  sim800SendCommand("AT+CUSD=1,\"*199#\",15", "OK", 6000, &resp);
+  if (resp.length() > 5) Serial.printf("[SIM800] Vi USSD Response:\n%s\n", resp.c_str());
 }
 
 void publishReading(const Reading &r) {
   time_t now = time(nullptr);
   unsigned long epoch = (now > 1700000000) ? (unsigned long)now : 0UL;
-  bool tempValid = (lastTempC >= 15.0f && lastTempC <= 60.0f);
 
   char payload[384];
   snprintf(payload, sizeof(payload),
@@ -270,7 +817,7 @@ void publishReading(const Reading &r) {
            "\"signal_quality\":%.2f,\"fall_detected\":%s,"
            "\"accel_magnitude\":%.2f,\"timestamp\":%lu,\"epoch\":%lu}",
            r.hr, r.spo2, r.spo2Low ? "true" : "false",
-           lastTempC, lastTempC, tempValid ? "true" : "false",
+           0.0f, lastTempC, "false",
            r.piPct, r.fallDetected ? "true" : "false",
            r.accelG, (unsigned long)r.ms, epoch);
 
@@ -286,17 +833,52 @@ void publishReading(const Reading &r) {
              "\"device_id\":\"ESP32-CardiacMonitor\",\"sensor\":\"wearable\","
              "\"timestamp\":%lu,\"data\":{\"fall_detected\":true,\"accel_magnitude\":%.2f}}",
              epoch ? epoch : (unsigned long)millis(), r.accelG);
+    // 1. Dispatch SIM800L Emergency SMS FIRST without any delay
+    dispatchFallSMS(r.accelG, r.fallHeightM, lastFallCategory,
+                    r.hr > 0 ? r.hr : lastShownHr,
+                    r.spo2 > 0 ? (int)r.spo2 : lastShownSpo2);
+
+    // 2. Publish real-time MQTT alert
     if (mqttClient.connected()) mqttClient.publish("caretrack/room-unit-01/wearable/motion", fallPayload);
-    postFallToBackend(fallPayload);
     Serial.printf("🚨 [EMERGENCY FALL DISPATCH] %s\n", fallPayload);
+
+    // 3. Fallback HTTP Webhook to Backend Cloud (only if MQTT is down)
+    postFallToBackend(fallPayload);
   }
 }
 
 void networkTask(void *) {
+  setupSIM800();
   setupWifi();
-  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+  uint32_t ntpStartedMs = millis();
+  while (WiFi.status() == WL_CONNECTED && time(nullptr) <= 1700000000 && millis() - ntpStartedMs < 5000) {
+    delay(100);
+  }
+  Serial.println(time(nullptr) > 1700000000 ? "[Time] NTP synchronized" : "[Time] NTP pending; epoch remains unavailable");
+
+  // Sync device configuration (emergency phone number & patient info) from backend
+  if (WiFi.status() == WL_CONNECTED) {
+    fetchDeviceConfigHttp();
+    lastConfigSyncMs = millis();
+  }
+
   for (;;) {
     maintainNetwork();
+
+    // Periodic config sync with backend over HTTP (fallback if MQTT broker offline or Vercel serverless)
+    if (netWifiUp && millis() - lastConfigSyncMs > CONFIG_SYNC_INTERVAL_MS) {
+      lastConfigSyncMs = millis();
+      fetchDeviceConfigHttp();
+    }
+
+    // Background periodic retry for SIM800 if module was powered after boot
+    static uint32_t lastSimCheckMs = 0;
+    if (!sim800Ready && millis() - lastSimCheckMs > 20000) {
+      lastSimCheckMs = millis();
+      setupSIM800();
+    }
+
     Reading r;
     if (xQueueReceive(readingQueue, &r, pdMS_TO_TICKS(20)) == pdTRUE) {
       publishReading(r);
@@ -341,7 +923,7 @@ void updateDisplay(int hr, int spo2Value) {
       display.setCursor(4, 44);
       display.printf("Type: %s", lastFallCategory);
       display.setCursor(4, 54);
-      display.print("HELP REQUESTED ->");
+      display.print(lastSmsSuccess ? "HELP & SMS SENT!" : "HELP REQUESTED ->");
       display.display();
       return;
     }
@@ -349,7 +931,13 @@ void updateDisplay(int hr, int spo2Value) {
 
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.print("Cardiac Monitor");
+  if (deviceIsPaired && strlen(assignedRoomNumber) > 0 && strcmp(assignedRoomNumber, "N/A") != 0) {
+    display.printf("%.13s", assignedRoomNumber);
+  } else {
+    display.print("Cardiac Monitor");
+  }
+  display.setCursor(110, 0);
+  display.print(sim800Ready ? "G" : ".");
   display.setCursor(120, 0);
   display.print(netMqttUp ? "H" : (netWifiUp ? "W" : "."));
   display.drawLine(0, 10, 127, 10, SH110X_WHITE);
@@ -661,6 +1249,9 @@ void setup() {
   pinMode(ALERT_LED_PIN, OUTPUT);
   digitalWrite(ALERT_LED_PIN, LOW);
 
+  // Load persisted dynamic configuration (emergency phone & patient info) from NVS Flash
+  loadConfigFromNVS();
+
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
   setupDisplay();
@@ -671,8 +1262,8 @@ void setup() {
   mqttClient.setBufferSize(512);
   mqttClient.setKeepAlive(30);
 
-  readingQueue = xQueueCreate(1, sizeof(Reading));
-  xTaskCreatePinnedToCore(networkTask, "net", 10240, nullptr, 1, nullptr, 0);
+  readingQueue = xQueueCreate(4, sizeof(Reading));
+  xTaskCreatePinnedToCore(networkTask, "net", 12288, nullptr, 1, nullptr, 0);
 
   sensorReady = setupSensor();
   setupMPU6050();
@@ -686,6 +1277,17 @@ void loop() {
     if (c == 'f' || c == 'F') {
       Serial.println("\n[SIMULATION] Manual Fall Triggered via Serial!");
       triggerFallEmergency(3.85f);
+    } else if (c == 's' || c == 'S') {
+      Serial.println("\n[SIM800] Manual Test SMS Triggered via Serial!");
+      triggerTestSMS();
+    } else if (c == 'g' || c == 'G') {
+      printSIM800Status();
+    } else if (c == 'c' || c == 'C') {
+      printDeviceConfig();
+    } else if (c == 'd' || c == 'D') {
+      triggerTestCall();
+    } else if (c == 'n' || c == 'N') {
+      checkSIMNumberUSSD();
     } else if (c == 'm' || c == 'M') {
       Serial.printf("\n--- MPU Status: %s | SVM: %.2fg | Temp: %.1fC ---\n",
                     mpuReady ? "OK" : "DISCONNECTED", currentSVM, lastTempC);
@@ -806,5 +1408,5 @@ void loop() {
   updateDisplay(lastShownHr, lastShownSpo2);
 
   queueTelemetry(hrOut, (float)spo2Out, piPct, spo2Out < SPO2_LOW_FLAG, false, currentSVM);
-Serial.printf(">>> [LOCKED] HR: %d BPM | SpO2: %d %% | PI: %.2f%%\n", hrOut, spo2Out, piPct);
+  Serial.printf(">>> [LOCKED] HR: %d BPM | SpO2: %d %% | PI: %.2f%%\n", hrOut, spo2Out, piPct);
 }

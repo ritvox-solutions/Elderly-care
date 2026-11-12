@@ -95,7 +95,7 @@ export default function PatientOnboardingForm({
         <legend>Family emergency contact</legend>
         <div className="patient-form-grid">
           <label>Full name<input className="ct-input" required value={form.emergency_contact_name} onChange={(e) => update('emergency_contact_name', e.target.value)} /></label>
-          <label>Phone number<input className="ct-input" type="tel" required minLength={5} value={form.emergency_contact_phone} onChange={(e) => update('emergency_contact_phone', e.target.value)} /></label>
+          <label>Emergency phone (SIM800L SMS alert)<input className="ct-input" type="tel" required minLength={5} placeholder="+1234567890" title="Cellular phone number notified via SMS upon fall detection" value={form.emergency_contact_phone} onChange={(e) => update('emergency_contact_phone', e.target.value)} /></label>
           <label className="patient-form-wide">Email for emergency alerts<input className="ct-input" type="email" required value={form.emergency_contact_email} onChange={(e) => update('emergency_contact_email', e.target.value)} /></label>
         </div>
       </fieldset>

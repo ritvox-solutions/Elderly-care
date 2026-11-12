@@ -857,6 +857,9 @@ void networkTask(void *) {
   }
   Serial.println(time(nullptr) > 1700000000 ? "[Time] NTP synchronized" : "[Time] NTP pending; epoch remains unavailable");
 
+  // Allow LwIP network stack and TCPIP core to settle before initiating HTTPS
+  delay(1000);
+
   // Sync device configuration (emergency phone number & patient info) from backend
   if (WiFi.status() == WL_CONNECTED) {
     fetchDeviceConfigHttp();

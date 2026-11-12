@@ -92,13 +92,28 @@ static const uint32_t SETTLE_MS          = 2500;
 static const float    SPO2_A             = 112.0f;
 static const float    SPO2_B             = 22.0f;
 
-// 3-Phase Fall Detection thresholds
-static const float    FALL_FREE_FALL_G      = 0.55f;
-static const float    FALL_IMPACT_MIN_G     = 2.70f;
-static const float    FALL_HARD_IMPACT_G    = 3.60f;
-static const uint32_t FALL_FREE_FALL_WINDOW = 650;
-static const uint32_t FALL_REST_TIME_MS     = 1400;
-static const uint32_t FALL_ALERT_SCREEN_MS  = 10000;
+// 3-Phase Fall Detection thresholds (Reduced & tuned for sensitive elderly care detection)
+#ifndef FALL_FREE_FALL_G
+#define FALL_FREE_FALL_G      0.68f    // Free-fall threshold: SVM < 0.68g (raised from 0.55g to catch bed slips & partial drops)
+#endif
+#ifndef FALL_IMPACT_MIN_G
+#define FALL_IMPACT_MIN_G     2.00f    // Post-freefall impact: SVM > 2.00g (reduced from 2.70g for carpet/cushioned impacts)
+#endif
+#ifndef FALL_HARD_IMPACT_G
+#define FALL_HARD_IMPACT_G    2.60f    // Direct collapse/shock: SVM > 2.60g (reduced from 3.60g for trip & slip detection)
+#endif
+#ifndef FALL_FREE_FALL_WINDOW
+#define FALL_FREE_FALL_WINDOW 800      // Max window between free-fall and impact (ms, expanded from 650ms to 800ms)
+#endif
+#ifndef FALL_REST_TIME_MS
+#define FALL_REST_TIME_MS     1000     // Post-impact stillness confirmation (ms, reduced from 1400ms to 1000ms for faster alert)
+#endif
+#ifndef FALL_CANCEL_MOTION_G
+#define FALL_CANCEL_MOTION_G  2.30f    // Active recovery movement threshold that aborts false alarm during rest window
+#endif
+#ifndef FALL_ALERT_SCREEN_MS
+#define FALL_ALERT_SCREEN_MS  10000    // Emergency OLED alert duration (ms)
+#endif
 
 // ---------------------------------------------------------------------------
 // Hardware Objects & Global State
@@ -1022,7 +1037,8 @@ bool setupMPU6050() {
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   mpuReady = true;
-  Serial.println("[Adafruit_MPU6050] Initialized & Active!");
+  Serial.printf("[Adafruit_MPU6050] Initialized! Thresholds: FreeFall < %.2fg, Impact > %.2fg, HardImpact > %.2fg, Rest: %ums\n",
+                FALL_FREE_FALL_G, FALL_IMPACT_MIN_G, FALL_HARD_IMPACT_G, FALL_REST_TIME_MS);
   return true;
 }
 
@@ -1122,7 +1138,8 @@ void processFallDetection() {
       }
       break;
     case FALL_WAITING_REST:
-      if (svm > 2.2f) {
+      // Allow brief 150ms rebound shock dampening before evaluating intentional recovery motion
+      if (now - impactOccurredMs > 150 && svm > FALL_CANCEL_MOTION_G) {
         fallStage = FALL_IDLE;
       } else if (now - impactOccurredMs >= FALL_REST_TIME_MS) {
         fallStage = FALL_IDLE;
@@ -1292,8 +1309,10 @@ void loop() {
     } else if (c == 'n' || c == 'N') {
       checkSIMNumberUSSD();
     } else if (c == 'm' || c == 'M') {
-      Serial.printf("\n--- MPU Status: %s | SVM: %.2fg | Temp: %.1fC ---\n",
+      Serial.printf("\n--- MPU Status: %s | Current SVM: %.2fg | Temp: %.1fC ---\n",
                     mpuReady ? "OK" : "DISCONNECTED", currentSVM, lastTempC);
+      Serial.printf("    Fall Thresholds: FreeFall < %.2fg | Impact > %.2fg | HardImpact > %.2fg | Rest: %ums | CancelMotion > %.2fg\n",
+                    FALL_FREE_FALL_G, FALL_IMPACT_MIN_G, FALL_HARD_IMPACT_G, (unsigned int)FALL_REST_TIME_MS, FALL_CANCEL_MOTION_G);
     }
   }
 

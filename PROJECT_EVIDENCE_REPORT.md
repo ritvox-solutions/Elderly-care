@@ -271,7 +271,7 @@ sequenceDiagram
     participant EXPO as Expo Push Gateway
     participant WS as Browser WebSocket
 
-    ESP->>ESP: 50Hz SVM: Free-fall (<0.55g) -> Impact (>2.70g) -> Rest (1400ms)
+    ESP->>ESP: 50Hz SVM: Free-fall (<0.68g) -> Impact (>2.00g) -> Rest (1000ms)
     ESP->>ESP: Height kinematic calculation & Alert LED HIGH (GPIO 2)
     ESP->>MQTT: Publish topic: caretrack/.../wearable/motion {fall_detected: true, accel: 3.82}
     ESP->>API: Fallback direct HTTPS POST /api/v1/telemetry/ingest
@@ -299,7 +299,7 @@ sequenceDiagram
     WS-->>WS: Play emergency alarm audio & display modal banner
 ```
 
-1. **Inertial Detection**: Wearable MPU6050 samples acceleration at 50Hz. A fall event traverses: Free-fall ($SVM < 0.55\text{ g}$) $\rightarrow$ Impact shock ($SVM > 2.70\text{ g}$) $\rightarrow$ Rest verification ($1400\text{ ms}$, $SVM < 2.2\text{ g}$) ([firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L516-L548)).
+1. **Inertial Detection**: Wearable MPU6050 samples acceleration at 50Hz. A fall event traverses: Free-fall ($SVM < 0.68\text{ g}$) $\rightarrow$ Impact shock ($SVM > 2.00\text{ g}$) $\rightarrow$ Rest verification ($1000\text{ ms}$, recovery cancel $SVM > 2.30\text{ g}$) ([firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L516-L548)).
 2. **Local Annunciation & Dual Dispatch**: ESP32 drives GPIO 2 HIGH (Alert LED), renders the Fall Alert screen on OLED, publishes to MQTT topic `caretrack/room-unit-01/wearable/motion`, and issues an immediate HTTPS POST to `/api/v1/telemetry/ingest` with 3 retries ([firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L238-L290)).
 3. **Contextual Hydration**: Backend `process_emergency()` identifies the paired patient via `DevicePairing` and executes `_recent_sensor_context()` to load all sensor readings for that patient over the past 60 seconds (`AMPV_WINDOW_SECONDS = 60`) ([backend/core/alerting.py](file:///c:/Users/HP/Desktop/Office/dhruva/backend/core/alerting.py#L327-L365)).
 4. **Clinical Verification (AMPV)**: `evaluate_ampv()` evaluates the composite data vector:
@@ -426,14 +426,14 @@ sequenceDiagram
   $$SVM = \sqrt{a_x^2 + a_y^2 + a_z^2} \quad (\text{where } a_i = \text{accel}_i / 9.80665)$$
 - **Finite State Machine (FSM)**:
   - `FALL_IDLE`:
-    - If $SVM < 0.55\text{ g}$ (`FALL_FREE_FALL_G`): Marks `freeFallStartMs = now`, transitions to `FALL_FREE_FALLING`.
-    - Else if $SVM > 3.60\text{ g}` (`FALL_HARD_IMPACT_G`): Direct collapse transition to `FALL_WAITING_REST`.
+    - If $SVM < 0.68\text{ g}$ (`FALL_FREE_FALL_G`): Marks `freeFallStartMs = now`, transitions to `FALL_FREE_FALLING`.
+    - Else if $SVM > 2.60\text{ g}` (`FALL_HARD_IMPACT_G`): Direct collapse transition to `FALL_WAITING_REST`.
   - `FALL_FREE_FALLING`:
-    - If $SVM > 2.70\text{ g}$ (`FALL_IMPACT_MIN_G`): Impact detected. Calculates duration $\Delta t = \text{now} - \text{freeFallStartMs}$, transitions to `FALL_WAITING_REST`.
-    - Else if $\text{now} - \text{freeFallStartMs} > 650\text{ ms}$ (`FALL_FREE_FALL_WINDOW`): Timeout without impact, resets to `FALL_IDLE`.
+    - If $SVM > 2.00\text{ g}$ (`FALL_IMPACT_MIN_G`): Impact detected. Calculates duration $\Delta t = \text{now} - \text{freeFallStartMs}$, transitions to `FALL_WAITING_REST`.
+    - Else if $\text{now} - \text{freeFallStartMs} > 800\text{ ms}$ (`FALL_FREE_FALL_WINDOW`): Timeout without impact, resets to `FALL_IDLE`.
   - `FALL_WAITING_REST`:
-    - If $SVM > 2.2\text{ g}$ during waiting window: User recovered movement; aborts and resets to `FALL_IDLE`.
-    - Else if $\text{now} - \text{impactOccurredMs} \ge 1400\text{ ms}$ (`FALL_REST_TIME_MS`): Fall confirmed; invokes height estimator and triggers emergency alert.
+    - If $SVM > 2.30\text{ g}$ after initial 150ms bounce dampening: User recovered movement; aborts and resets to `FALL_IDLE`.
+    - Else if $\text{now} - \text{impactOccurredMs} \ge 1000\text{ ms}$ (`FALL_REST_TIME_MS`): Fall confirmed; invokes height estimator and triggers emergency alert.
 
 ---
 
@@ -441,7 +441,7 @@ sequenceDiagram
 
 - **Defined in**: [`firmware/wearbale/firmware/firmware.ino`](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino), function `calculateFallHeight()`.
 - **Formulas**:
-  - Primary Kinematic Model (when free-fall duration $90\text{ ms} \le \Delta t \le 650\text{ ms}$):
+  - Primary Kinematic Model (when free-fall duration $90\text{ ms} \le \Delta t \le 800\text{ ms}$):
     $$h = \frac{1}{2} \cdot g_{\text{eff}} \cdot (\Delta t)^2$$
     where effective gravitational acceleration with torso air/biomechanical damping $g_{\text{eff}} = 8.83\text{ m/s}^2$ ($0.90 \cdot g$).
   - Fallback Biomechanical Shock Model (for sudden collapses without clear free-fall phase):
@@ -877,7 +877,7 @@ erDiagram
 ### Verified Contributions Supported by Code
 
 1. **Cross-Modality Multi-Parameter Verification (AMPV)**: A deterministic clinical decision engine operating over a 60-second temporal correlation window that combines wearable cardiac vitals, body kinematic impacts, and room ambient PIR motion to verify emergency fall and cardiac incidents before generating alerts | **[VERIFIED]** [backend/core/ampv.py](file:///c:/Users/HP/Desktop/Office/dhruva/backend/core/ampv.py).
-2. **Three-Phase Biomechanical Fall Detection with Dual-Model Height Estimation**: A 50Hz finite state machine implemented on constrained microcontrollers that models free-fall weightlessness ($<0.55\text{ g}$), impact shock ($>2.70\text{ g}$), and post-fall rest ($1400\text{ ms}$), combining kinematic physics ($h = 0.5 \cdot g_{\text{eff}} \cdot t^2$) with non-linear shock power regressions to categorize fall severity | **[VERIFIED]** [firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L463-L548).
+2. **Three-Phase Biomechanical Fall Detection with Dual-Model Height Estimation**: A 50Hz finite state machine implemented on constrained microcontrollers that models free-fall weightlessness ($<0.68\text{ g}$), impact shock ($>2.00\text{ g}$), and post-fall rest ($1000\text{ ms}$), combining kinematic physics ($h = 0.5 \cdot g_{\text{eff}} \cdot t^2$) with non-linear shock power regressions to categorize fall severity | **[VERIFIED]** [firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L463-L548).
 3. **Resilient Dual-Channel Cloud Ingestion Topology**: A hybrid communication design supporting persistent bidirectional pub/sub over TLS MQTT (HiveMQ Cloud) for low-latency live streaming, combined with synchronous fallback HTTP POST webhooks (`/api/v1/telemetry/ingest`) to support serverless backend hosting (Vercel) | **[VERIFIED]** [backend/main.py](file:///c:/Users/HP/Desktop/Office/dhruva/backend/main.py#L408-L438), [firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino#L238-L258).
 4. **Relational Patient-Device Decoupling Architecture**: A database schema that pairs heterogeneous physical devices (wearable monitors and ambient room units) to patient entities, enabling independent hardware replacement while maintaining patient-specific alert thresholds and assignment of primary caregivers | **[VERIFIED]** [backend/models/device.py](file:///c:/Users/HP/Desktop/Office/dhruva/backend/models/device.py), [backend/models/patient.py](file:///c:/Users/HP/Desktop/Office/dhruva/backend/models/patient.py).
 5. **Autonomous Cellular SMS Fallback Dispatch (SIM800L)**: HardwareSerial UART2 driver on the ESP32 that autonomously dispatches high-priority SMS notifications with impact shock (g), estimated fall height (m), and vital signs directly to an emergency contact over GSM cellular networks when WiFi or cloud connectivity fails | **[VERIFIED]** [firmware/wearbale/firmware/firmware.ino](file:///c:/Users/HP/Desktop/Office/dhruva/firmware/wearbale/firmware/firmware.ino).
@@ -902,7 +902,7 @@ erDiagram
    - Edges: Labeled with protocols and port numbers (MQTT TLS 8883, WSS 8884, HTTPS 443, WebSocket `/ws/live`, SMTP 587, TCP 5432).
 2. **Three-Phase Fall Detection Finite State Machine (FSM)**:
    - States: `FALL_IDLE`, `FALL_FREE_FALLING`, `FALL_WAITING_REST`.
-   - Transitions: $SVM < 0.55\text{ g}$, $SVM > 3.60\text{ g}$, $SVM > 2.70\text{ g}$, timeout $> 650\text{ ms}$, recovery movement $SVM > 2.2\text{ g}$, rest confirmation $\ge 1400\text{ ms}$.
+   - Transitions: $SVM < 0.68\text{ g}$, $SVM > 2.60\text{ g}$, $SVM > 2.00\text{ g}$, timeout $> 800\text{ ms}$, recovery movement $SVM > 2.30\text{ g}$, rest confirmation $\ge 1000\text{ ms}$.
 3. **AMPV Decision Logic Flowchart**:
    - Inputs: 60-second correlated snapshot ($HR$, $\text{SpO}_2$, $T_b$, $F$, $M$) and patient thresholds ($\text{hr\_min}$, $\text{hr\_max}$, $\text{spo2\_min}$).
    - Decision Nodes: Rule 1 ($F \land (\text{Abnormal } HR \lor \text{Low } \text{SpO}_2)$), Rule 2 ($\text{Abnormal } HR \land T_b > 38^\circ\text{C}$), Rule 3 ($F \land \text{No Room Motion}$).

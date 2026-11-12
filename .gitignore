@@ -22,7 +22,7 @@ env/
 *.crt
 *.p12
 *.pfx
-secrets.h
+
 config.h
 credentials.h
 firebase-service-account*.json

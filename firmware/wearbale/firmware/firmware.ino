@@ -652,6 +652,20 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   Serial.printf("\n[SIM800] 📤 Sending Emergency SMS to: %s\n", cleanPhone);
   Serial.printf("[SIM800] Content: \"%s\"\n", message);
 
+  // Check signal quality (AT+CSQ)
+  String csqResp;
+  sim800SendCommand("AT+CSQ", "OK", 1000, &csqResp);
+  int csqVal = 0;
+  int csqIdx = csqResp.indexOf("+CSQ: ");
+  if (csqIdx != -1) {
+    csqVal = csqResp.substring(csqIdx + 6, csqResp.indexOf(",", csqIdx)).toInt();
+    sim800SignalCsq = csqVal;
+  }
+  if (csqVal == 0 || csqVal == 99) {
+    Serial.printf("[SIM800] ⚠️ Signal CSQ is %d/31 (No Signal). SMS will likely fail.\n", csqVal);
+    Serial.println("[SIM800]    Check: 1) Antenna attached to NET pin? 2) Is power 3.8V-4.4V (not 4.8V/5V)? 3) Note: Jio does NOT support 2G (use Airtel/Vi/BSNL).");
+  }
+
   // Quick check if cellular network registered
   String regResp;
   sim800SendCommand("AT+CREG?", "OK", 1000, &regResp);
@@ -660,11 +674,11 @@ bool sendSMS(const char* phoneNumber, const char* message) {
     return false;
   }
 
-  // Ensure SMS text mode
-  if (!sim800SendCommand("AT+CMGF=1", "OK", 1500)) {
-    Serial.println("[SIM800] ❌ Failed to set SMS text mode.");
-    return false;
-  }
+  // Ensure verbose errors and SMS text mode
+  sim800SendCommand("AT+CMEE=2", "OK", 1000);
+  sim800SendCommand("AT+CMGF=1", "OK", 1000);
+  sim800SendCommand("AT+CSCS=\"GSM\"", "OK", 1000);
+  sim800SendCommand("AT+CSMP=17,167,0,0", "OK", 1000); // Standard text mode parameters
 
   // Flush buffer
   while (SIM800_SERIAL.available()) SIM800_SERIAL.read();
@@ -676,7 +690,7 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   // Wait for '>' prompt
   bool gotPrompt = false;
   uint32_t promptStart = millis();
-  while (millis() - promptStart < 3000) {
+  while (millis() - promptStart < 4000) {
     if (SIM800_SERIAL.available()) {
       char c = (char)SIM800_SERIAL.read();
       if (c == '>') {
@@ -697,11 +711,11 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   SIM800_SERIAL.print(message);
   SIM800_SERIAL.write(0x1A);
 
-  // Wait for +CMGS: or OK (network dispatch timeout up to 15 seconds)
+  // Wait for +CMGS: or OK (network dispatch timeout up to 20 seconds)
   String sendResp = "";
   uint32_t sendStart = millis();
   bool sent = false;
-  while (millis() - sendStart < 15000) {
+  while (millis() - sendStart < 20000) {
     while (SIM800_SERIAL.available()) {
       char c = (char)SIM800_SERIAL.read();
       sendResp += c;
@@ -711,10 +725,17 @@ bool sendSMS(const char* phoneNumber, const char* message) {
       break;
     }
     if (sendResp.indexOf("ERROR") != -1) {
+      // Allow brief delay to capture full +CMS ERROR: description
+      delay(200);
+      while (SIM800_SERIAL.available()) {
+        sendResp += (char)SIM800_SERIAL.read();
+      }
       break;
     }
     delay(50);
   }
+
+  sendResp.trim();
 
   if (sent) {
     lastSmsSentMs = millis();
@@ -724,6 +745,11 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   } else {
     lastSmsSuccess = false;
     Serial.printf("[SIM800] ❌ SMS transmission failed or timed out. Response: %s\n", sendResp.c_str());
+    if (sendResp.length() == 0) {
+      Serial.println("[SIM800]    (Empty response indicates SIM800 rebooted during 2A transmission burst. Solder a 1000uF capacitor across VCC & GND!)");
+    } else if (sendResp.indexOf("CMS ERROR") != -1) {
+      Serial.println("[SIM800]    (Carrier rejected SMS. Check: 1) Active SMS pack/balance? 2) Valid 2G Airtel/Vi/BSNL SIM? 3) Network signal?)");
+    }
     return false;
   }
 }
@@ -773,12 +799,27 @@ void printSIM800Status() {
     return;
   }
   String resp;
+  sim800SendCommand("AT+CPIN?", "OK", 1000, &resp);
+  Serial.printf("  SIM Status (CPIN): %s", resp.c_str());
   sim800SendCommand("AT+CSQ", "OK", 1000, &resp);
   Serial.printf("  Signal (CSQ): %s", resp.c_str());
+  int csqIdx = resp.indexOf("+CSQ: ");
+  if (csqIdx != -1) {
+    int csq = resp.substring(csqIdx + 6, resp.indexOf(",", csqIdx)).toInt();
+    if (csq == 0 || csq == 99) {
+      Serial.println("  ⚠️ CSQ is 0 (NO SIGNAL)! Check antenna on NET pin & verify power is 3.8-4.4V (not 5V). Note: Jio does NOT support 2G (use Airtel/Vi/BSNL).");
+    } else if (csq < 10) {
+      Serial.println("  ⚠️ CSQ is weak (<10/31). Relocate closer to window or adjust antenna.");
+    } else {
+      Serial.println("  ✅ Signal strength is good.");
+    }
+  }
   sim800SendCommand("AT+CREG?", "OK", 1000, &resp);
   Serial.printf("  Registration: %s", resp.c_str());
   sim800SendCommand("AT+COPS?", "OK", 1500, &resp);
   Serial.printf("  Operator: %s", resp.c_str());
+  sim800SendCommand("AT+CSCA?", "OK", 1000, &resp);
+  Serial.printf("  SMS Center (CSCA): %s", resp.c_str());
   sim800SendCommand("AT+CBC", "OK", 1000, &resp);
   Serial.printf("  Battery (CBC): %s", resp.c_str());
   sim800SendCommand("AT+CCID", "OK", 1000, &resp);

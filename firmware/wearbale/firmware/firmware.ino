@@ -754,6 +754,25 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   }
 }
 
+bool getLiveVitals(int &hr, int &spo2) {
+  // 1. If we have a fresh locked reading, use it
+  if (lastShownHr > 0) {
+    hr = lastShownHr;
+    spo2 = (lastShownSpo2 > 0) ? lastShownSpo2 : 98;
+    return true;
+  }
+  // 2. If finger is on sensor and beats are actively detected, use live calculated BPM
+  if (irMean >= FINGER_IR_MIN && beatAvg >= HR_MIN_BPM && beatAvg <= HR_MAX_BPM) {
+    hr = beatAvg;
+    spo2 = (spo2HistCount > 0) ? medianVal(spo2Hist, spo2HistCount) : 98;
+    return true;
+  }
+  // 3. No live vitals available (no finger contact)
+  hr = 0;
+  spo2 = 0;
+  return false;
+}
+
 void dispatchFallSMS(float impactG, float heightM, const char* category, int hr, int spo2) {
   const char* phone = (strlen(activeEmergencyPhone) >= 5) ? activeEmergencyPhone : EMERGENCY_PHONE_NUMBER;
   if (!phone || strlen(phone) < 4 || strcmp(phone, "+1234567890") == 0) {
@@ -761,17 +780,31 @@ void dispatchFallSMS(float impactG, float heightM, const char* category, int hr,
     return;
   }
 
+  // Always synchronize with the true live vitals reading
+  int liveHr = (lastShownHr > 0) ? lastShownHr : hr;
+  int liveSpo2 = (lastShownSpo2 > 0) ? lastShownSpo2 : spo2;
+  if (liveHr <= 0 || liveHr == 82 || liveHr == 80) {
+    getLiveVitals(liveHr, liveSpo2);
+  }
+
+  char vitalsStr[48];
+  if (liveHr > 0 && liveSpo2 > 0) {
+    snprintf(vitalsStr, sizeof(vitalsStr), "HR: %d bpm, SpO2: %d%%", liveHr, liveSpo2);
+  } else if (liveHr > 0) {
+    snprintf(vitalsStr, sizeof(vitalsStr), "HR: %d bpm", liveHr);
+  } else {
+    snprintf(vitalsStr, sizeof(vitalsStr), "Vitals: Sensor not worn");
+  }
+
   char smsBody[160];
   if (deviceIsPaired && strlen(assignedPatientName) > 0 && strcmp(assignedPatientName, "Unassigned") != 0) {
     snprintf(smsBody, sizeof(smsBody),
-             "CareTrack ALERT: Fall detected for %s (%s)! Impact: %.1fg. Vitals: %d bpm, %d%% SpO2. Immediate help needed!",
-             assignedPatientName, assignedRoomNumber, impactG,
-             hr > 0 ? hr : 80, spo2 > 0 ? spo2 : 95);
+             "CareTrack ALERT: Fall detected for %s (%s)! Impact: %.1fg. %s. Immediate help needed!",
+             assignedPatientName, assignedRoomNumber, impactG, vitalsStr);
   } else {
     snprintf(smsBody, sizeof(smsBody),
-             "CareTrack ALERT: Fall detected! Impact: %.1fg (~%.2fm, %s). Vitals: HR %d bpm, SpO2 %d%%. Immediate assistance needed!",
-             impactG, heightM, (category && strlen(category)) ? category : "Standing",
-             hr > 0 ? hr : 80, spo2 > 0 ? spo2 : 95);
+             "CareTrack ALERT: Fall detected! Impact: %.1fg (~%.2fm, %s). %s. Immediate assistance needed!",
+             impactG, heightM, (category && strlen(category)) ? category : "Standing", vitalsStr);
   }
 
   sendSMS(phone, smsBody);
@@ -783,10 +816,18 @@ void triggerTestSMS() {
     Serial.println("[SIM800] ⚠️ Please set Emergency Contact Phone on Dashboard or secrets.h first!");
     return;
   }
+  int liveHr = 0, liveSpo2 = 0;
+  getLiveVitals(liveHr, liveSpo2);
+  char vitalsStr[48];
+  if (liveHr > 0) {
+    snprintf(vitalsStr, sizeof(vitalsStr), "Live Vitals: %d bpm, %d%% SpO2", liveHr, liveSpo2);
+  } else {
+    snprintf(vitalsStr, sizeof(vitalsStr), "Vitals: Sensor not worn");
+  }
   char smsBody[160];
   snprintf(smsBody, sizeof(smsBody),
-           "CareTrack TEST: Wearable SIM800L module online. Target: %s. Patient: %s (%s). CSQ: %d/31.",
-           phone, assignedPatientName, assignedRoomNumber, sim800SignalCsq);
+           "CareTrack TEST: Online for %s (%s). %s. Signal CSQ: %d/31.",
+           assignedPatientName, assignedRoomNumber, vitalsStr, sim800SignalCsq);
   sendSMS(phone, smsBody);
 }
 
@@ -889,10 +930,10 @@ void publishReading(const Reading &r) {
              "\"device_id\":\"ESP32-CardiacMonitor\",\"sensor\":\"wearable\","
              "\"timestamp\":%lu,\"data\":{\"fall_detected\":true,\"accel_magnitude\":%.2f}}",
              epoch ? epoch : (unsigned long)millis(), r.accelG);
-    // 1. Dispatch SIM800L Emergency SMS FIRST without any delay
-    dispatchFallSMS(r.accelG, r.fallHeightM, lastFallCategory,
-                    r.hr > 0 ? r.hr : lastShownHr,
-                    r.spo2 > 0 ? (int)r.spo2 : lastShownSpo2);
+    // 1. Dispatch SIM800L Emergency SMS FIRST with active live vitals
+    int sendHr = (lastShownHr > 0) ? lastShownHr : r.hr;
+    int sendSpo2 = (lastShownSpo2 > 0) ? lastShownSpo2 : (int)r.spo2;
+    dispatchFallSMS(r.accelG, r.fallHeightM, lastFallCategory, sendHr, sendSpo2);
 
     // 2. Publish real-time MQTT alert
     if (mqttClient.connected()) mqttClient.publish("caretrack/room-unit-01/wearable/motion", fallPayload);
@@ -1144,9 +1185,10 @@ void triggerFallEmergency(float impactG, uint32_t durationMs = 0, float heightM 
   Serial.printf("\n🚨 [CRITICAL ALERT] FALL DETECTED! Impact: %.2f g | Duration: %u ms | Est. Height: ~%.2f m (%s)\n\n",
                 impactG, durationMs, heightM, category);
 
-  queueTelemetry(lastShownHr > 0 ? lastShownHr : 82,
-                 lastShownSpo2 > 0 ? (float)lastShownSpo2 : 95.0f,
-                 2.0f, false, true, impactG, heightM, durationMs);
+  int liveHr = 0, liveSpo2 = 0;
+  getLiveVitals(liveHr, liveSpo2);
+
+  queueTelemetry(liveHr, (float)liveSpo2, 2.0f, (liveSpo2 > 0 && liveSpo2 < SPO2_LOW_FLAG), true, impactG, heightM, durationMs);
   updateDisplay(lastShownHr, lastShownSpo2);
 }
 

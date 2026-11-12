@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Local secrets and generated artifacts
-.env
+
 .env.*
 !.env.example
 *.pem
